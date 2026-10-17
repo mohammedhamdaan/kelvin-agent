@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data / generated artifacts
+*.db
+*.db-wal
+*.db-shm
+rag_index/
+kelvin6k.log
+
+# Frontend
+ui/node_modules/
+ui/dist/
+ui/.env
+*.db.bak*
+*.pt
+weights/

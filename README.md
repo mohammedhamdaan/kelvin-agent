@@ -93,3 +93,8 @@ Example Voice Commands
 "While printing the wall, the nozzle stopped. What could be the reason?"
 
 "Save that this nozzle stop issue was faced by Hamdan today while printing Wall 2."
+
+**3. Configure your `.env` file**
+- Copy the template:
+  ```cmd
+  copy .env.example .env

@@ -1,23 +1,19 @@
 """
-HTTP API for the Kelvin6K React dashboard.
+HTTP API for the Kelvin6K Voice Assistant.
 
-A thin wrapper over the EXISTING Python modules -- no machine logic is
-reimplemented here:
-
-    /api/status           -> agent.services.machine_state (+ agent.sensors, agent.db)
-    /api/assistant/query  -> agent.assistant / agent.query_router (tools + RAG)
-    /api/stt              -> agent.listener   (faster-whisper)
-    /api/tts*             -> agent.voice      (ElevenLabs / pyttsx3)
-    /api/camera/*         -> api.camera_service (CameraStream + VisionPipeline)
-
-Every value carries a provenance tag so the UI can never present a simulated or
-missing number as if it were measured:
-
-    REAL         measured from the camera/AI pipeline, or entered for the job
-    MOCK         produced by the built-in simulator (SimulatedSensors)
-    UNAVAILABLE  not connected / not measured -- shown as such, never guessed
-
-READ-ONLY: there are no endpoints that command the robot, pump or accelerator.
+Endpoints:
+    /api/health           -> Server & Voice Agent health status
+    /api/ask              -> Assistant query (Voice / Text)
+    /api/assistant/query  -> Alias for /api/ask
+    /api/assistant/stream -> SSE streaming assistant response
+    /api/stt              -> faster-whisper speech-to-text
+    /api/tts*             -> ElevenLabs / pyttsx3 speech synthesis
+    /api/history          -> Production & query event history
+    /api/operators        -> Operator management
+    /api/shifts*          -> Shift & attendance tracking
+    /api/production*      -> Wall production records
+    /api/issues*          -> Shop-floor issue logging & resolution
+    /api/handovers*       -> Shift handover orchestration
 """
 
 import asyncio
@@ -36,23 +32,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from agent import config, db, metrics, shift_store
+from agent import config, db, listener, metrics, shift_store
 from agent.assistant import Assistant
 from agent.logging_setup import configure_logging, get_logger
 from agent.rag.retriever import index_summary
-from agent.rules import RuleEngine
-from agent.sensors import NotConnectedMachine, SimulatedSensors
-from agent.services import machine_state as ms
-from agent.state import PrinterState
 
 configure_logging()
 log = get_logger("API")
 
-REAL = "REAL"
-MOCK = "MOCK"
-UNAVAILABLE = "UNAVAILABLE"
-
-app = FastAPI(title="Kelvin6K API", version="1.1.0")
+app = FastAPI(title="Kelvin6K Voice Assistant API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # local dashboard; tighten for production deployment
@@ -61,49 +49,15 @@ app.add_middleware(
     expose_headers=["X-TTS-Engine"],
 )
 
-class UnavailableCameraService:
-    status = "unavailable"
-    source = "none"
-    fps = 0.0
-    resolution = (0, 0)
-    error = "Camera functionality is unavailable in this version."
-    metrology = None
-    metrology_announcement = None
-    def start(self): pass
-    def stop(self): pass
-    def latest_jpeg(self): return None
-    def latest_people_count(self): return 0
-    def latest_fire_count(self): return 0
-    def latest_detections(self): return []
-
-# Shared singletons -- the same objects the console app uses.
-state = PrinterState()
-rules = RuleEngine()
-camera_service = UnavailableCameraService()
-site_camera_service = UnavailableCameraService()
-ms.bind_site_camera_service(site_camera_service)
-assistant = Assistant(state=state)
-_sensors = SimulatedSensors()
-_machine_link = NotConnectedMachine()
-
-
-def field(value: Any, provenance: str, unit: str = "", reason: str = "") -> Dict[str, Any]:
-    """Uniform value envelope so the UI always knows where a number came from."""
-    return {"value": value, "provenance": provenance, "unit": unit, "reason": reason}
+# Shared singleton voice assistant instance
+assistant = Assistant()
 
 
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
-    ms.bind_live_state(state)
-    ms.bind_site_camera_service(site_camera_service)
 
-    # Load speech-to-text in the background so the FIRST question does not pay
-    # the model load. Threaded, so startup is not blocked either.
-    import threading
-
-    from agent import listener
-
+    # Preload whisper in background so first query has zero model load latency
     threading.Thread(target=listener.preload, name="whisper-preload", daemon=True).start()
 
     def _warm_answer_engine() -> None:
@@ -113,7 +67,7 @@ def _startup() -> None:
             pass
 
     threading.Thread(target=_warm_answer_engine, name="answer-warmup", daemon=True).start()
-    log.info("API started (camera disabled); speech-to-text loading in background")
+    log.info("Kelvin6K Voice Assistant API ready; speech-to-text loading in background")
 
 
 @app.on_event("shutdown")
@@ -130,254 +84,17 @@ def health() -> Dict[str, Any]:
     rag = index_summary()
     return {
         "ok": True,
-        "camera_source": config.CAMERA_SOURCE,
-        "camera_status": camera_service.status,
+        "camera_source": "none",
+        "camera_status": "disabled",
         "llm": "gemini" if config.GEMINI_API_KEY else "offline-router",
         "llm_model": config.GEMINI_MODEL if config.GEMINI_API_KEY else None,
         "stt": f"faster-whisper ({config.WHISPER_MODEL_SIZE}) - {listener.get_status()}",
         "tts": provider_name(),
         "rag_chunks": rag["chunks"],
         "rag_mode": "semantic" if rag["semantic"] else "lexical",
-        "calibrated": config.PIXELS_PER_MM > 0,
+        "calibrated": False,
         "read_only": True,
     }
-
-
-# --- status -------------------------------------------------------------
-
-@app.get("/api/status")
-def status() -> Dict[str, Any]:
-    """Everything the dashboard shows, each field tagged with its provenance."""
-    progress = ms.get_print_progress()
-    layer = ms.get_current_layer()
-    width = ms.get_current_layer_width()
-    print_status = ms.get_current_print_status()
-    machine = ms.get_machine_status()
-
-    camera = {
-        "status": camera_service.status,
-        "source": camera_service.source,
-        "fps": round(camera_service.fps, 1),
-        "resolution": list(camera_service.resolution),
-        "error": camera_service.error,
-        "provenance": REAL if camera_service.status == "live" else UNAVAILABLE,
-    }
-
-    camera2 = {
-        "status": site_camera_service.status,
-        "source": site_camera_service.source,
-        "fps": round(site_camera_service.fps, 1),
-        "resolution": list(site_camera_service.resolution),
-        "error": site_camera_service.error,
-        "provenance": REAL if site_camera_service.status == "live" else UNAVAILABLE,
-        "people_count": site_camera_service.latest_people_count(),
-        "fire_count": site_camera_service.latest_fire_count(),
-        "detections": site_camera_service.latest_detections(),
-    }
-
-    # --- production (from the tracked print job) ---
-    if progress.get("available"):
-        production = {
-            "job_name": field(progress["job_name"], REAL),
-            "total_mm": field(progress["total_mm"], REAL, "mm"),
-            "completed_mm": field(progress["completed_mm"], REAL, "mm"),
-            "remaining_mm": field(progress["remaining_mm"], REAL, "mm"),
-            "percentage": field(progress["percentage"], REAL, "%"),
-            "current_layer": field(progress.get("current_layer"), REAL),
-            "total_layers": field(progress.get("total_layers"), REAL),
-        }
-    else:
-        reason = progress.get("reason", "No active print job.")
-        production = {
-            key: field(None, UNAVAILABLE, unit, reason)
-            for key, unit in (
-                ("job_name", ""), ("total_mm", "mm"), ("completed_mm", "mm"),
-                ("remaining_mm", "mm"), ("percentage", "%"),
-                ("current_layer", ""), ("total_layers", ""),
-            )
-        }
-
-    # --- vision-derived ---
-    vision = {
-        "printing": field(
-            print_status.get("printing") if print_status.get("available") else None,
-            REAL if print_status.get("available") else UNAVAILABLE,
-            "", print_status.get("reason", ""),
-        ),
-        "print_status": field(
-            print_status.get("status") if print_status.get("available") else None,
-            REAL if print_status.get("available") else UNAVAILABLE,
-            "", print_status.get("reason", ""),
-        ),
-        "layer_number": field(
-            layer.get("current_layer") if layer.get("available") else None,
-            REAL if layer.get("available") else UNAVAILABLE,
-            "", layer.get("reason", ""),
-        ),
-        "layer_width_mm": field(
-            width.get("layer_width_mm") if width.get("available") else None,
-            REAL if width.get("available") else UNAVAILABLE,
-            "mm", width.get("reason", ""),
-        ),
-        "layer_width_px": field(
-            width.get("width_px") or width.get("layer_width_px"),
-            REAL if (width.get("width_px") or width.get("layer_width_px")) is not None else UNAVAILABLE,
-            "px", "",
-        ),
-        "confidence": field(
-            machine.get("confidence") if machine.get("available") else None,
-            REAL if machine.get("available") else UNAVAILABLE, "", "",
-        ),
-        "motion_score": field(
-            machine.get("motion_score") if machine.get("available") else None,
-            REAL if machine.get("available") else UNAVAILABLE, "", "",
-        ),
-        "note": width.get("note") or print_status.get("note") or machine.get("note"),
-    }
-
-    # --- process sensors: SIMULATED until a machine link exists ---
-    reading = _sensors.read()
-    sensor_provenance = MOCK if reading.source == "SIMULATED" else REAL
-    material = {
-        "material_flow_percent": field(reading.material_flow_percent, sensor_provenance, "%"),
-        "nozzle_temp_c": field(reading.nozzle_temp_c, sensor_provenance, "C"),
-        "bed_temp_c": field(reading.bed_temp_c, sensor_provenance, "C"),
-        "machine_state": field(reading.machine_state, sensor_provenance),
-        "source_note": (
-            "These process values come from the built-in SIMULATOR, not the real "
-            "machine. Connect a MachineInterface to replace them."
-            if sensor_provenance == MOCK else ""
-        ),
-    }
-
-    # --- machine telemetry: genuinely not connected ---
-    link = _machine_link.read()
-    link_reason = link.unavailable_reason
-    machine_telemetry = {
-        "pump_running": field(link.pump_running, UNAVAILABLE, "", link_reason),
-        "pump_speed_rpm": field(link.pump_speed_rpm, UNAVAILABLE, "RPM", link_reason),
-        "accelerator_running": field(link.accelerator_running, UNAVAILABLE, "", link_reason),
-        "accelerator_speed_rpm": field(link.accelerator_speed_rpm, UNAVAILABLE, "RPM", link_reason),
-        "print_speed_mm_s": field(link.print_speed_mm_s, UNAVAILABLE, "mm/s", link_reason),
-        "pressure_bar": field(link.pressure_bar, UNAVAILABLE, "bar", link_reason),
-    }
-
-    snapshot = state.snapshot()
-    alerts = [
-        {"level": a["level"], "message": a["message"], "seconds_ago": a["seconds_ago"]}
-        for a in snapshot.get("recent_alerts", [])
-    ]
-
-    # --- derived timing / geometry / material ---
-    job = db.get_active_job()
-    timing = metrics.production_metrics(job)
-    elapsed_seconds = timing.get("elapsed_seconds", {}).get("value")
-    geometry = metrics.geometry_metrics(job, snapshot.get("vision", {}))
-    material_detail = metrics.material_metrics(job, elapsed_seconds)
-
-    # --- robot / communication ---
-    machine_link_connected = link.source != "NOT_CONNECTED"
-    camera_live = camera_service.status == "live"
-    robot_online = camera_live or machine_link_connected
-
-    if print_status.get("available"):
-        operation_field = metrics.field(
-            "PRINTING" if print_status.get("printing") else "IDLE", REAL
-        )
-    else:
-        operation_field = metrics.unavailable(
-            print_status.get("reason", "No current machine status.")
-        )
-
-    robot = {
-        "robot_online": metrics.field(robot_online, REAL),
-        "robot_status": metrics.field("ONLINE" if robot_online else "OFFLINE", REAL),
-        "machine_state": material["machine_state"],
-        "current_operation": operation_field,
-        "current_shift": metrics.current_shift(),
-        "current_operator": metrics.current_operator(job),
-        "communication": {
-            "api": metrics.field("CONNECTED", REAL),
-            "camera": metrics.field(
-                camera_service.status.upper(),
-                REAL if camera_live else UNAVAILABLE, "", camera_service.error or "",
-            ),
-            "machine_link": metrics.field(
-                "CONNECTED" if machine_link_connected else "NOT CONNECTED",
-                REAL if machine_link_connected else UNAVAILABLE,
-                "", "" if machine_link_connected else link_reason,
-            ),
-        },
-    }
-
-    # --- problems ---
-    warnings = [a for a in alerts if a["level"] == "warning"]
-    criticals = [a for a in alerts if a["level"] == "critical"]
-    machine_problems = [
-        a for a in alerts
-        if any(w in a["message"].lower() for w in ("flow", "temp", "pump", "accelerator", "machine"))
-    ]
-    camera_problems = []
-    if camera_service.status != "live":
-        camera_problems.append({
-            "level": "warning",
-            "message": camera_service.error or f"Camera status: {camera_service.status}",
-            "seconds_ago": 0.0,
-        })
-
-    problems = {
-        "warnings": warnings,
-        "critical": criticals,
-        "machine": machine_problems,
-        "camera": camera_problems,
-        "counts": {
-            "warnings": len(warnings), "critical": len(criticals),
-            "machine": len(machine_problems), "camera": len(camera_problems),
-        },
-    }
-
-    return {
-        "timestamp": time.time(),
-        "camera": camera,
-        "camera2": camera2,
-        "people_count": site_camera_service.latest_people_count(),
-        "production": {**production, **timing},
-        "vision": vision,
-        "geometry": geometry,
-        "material": {**material, **material_detail},
-        "machine_telemetry": machine_telemetry,
-        "robot": robot,
-        "problems": problems,
-        "alerts": alerts,
-        "calibrated": config.PIXELS_PER_MM > 0,
-        "llm_mode": "gemini_agentic" if config.GEMINI_API_KEY else "missing_api_key",
-        # Additive: existing keys above are unchanged. None until the camera
-        # service has produced a measurement, or when metrology is disabled.
-        "metrology": (
-            camera_service.metrology.to_dict()
-            if getattr(camera_service, "metrology", None) is not None
-            else None
-        ),
-    }
-
-
-@app.get("/api/metrology/announcement")
-def metrology_announcement() -> Dict[str, Any]:
-    """
-    The most recent layer-width announcement worth speaking, if any.
-
-    The dashboard polls this and hands the text to the EXISTING Voice
-    Assistant's speak path, so there is one voice system rather than a second
-    one talking over the first. `id` increments per announcement; the UI speaks
-    only when it sees an id it has not spoken yet.
-
-    The text is composed from the same MetrologyResult published above, so the
-    spoken width and the width drawn on the camera can never disagree.
-    """
-    announcement = getattr(camera_service, "metrology_announcement", None)
-    if announcement is None:
-        return {"announcement": None, "enabled": config.METROLOGY_ENABLED}
-    return {"announcement": announcement.to_dict(), "enabled": config.METROLOGY_ENABLED}
 
 
 @app.get("/api/history")
@@ -855,60 +572,6 @@ def tts_diagnostics() -> Dict[str, Any]:
     return diagnostics()
 
 
-# --- camera (disabled in this version) ----------------------------------
-
-@app.get("/api/camera/stream")
-def camera_stream(request: Request):
-    raise HTTPException(
-        status_code=503,
-        detail="Camera functionality is unavailable in this version.",
-    )
-
-
-@app.get("/api/camera/snapshot")
-def camera_snapshot():
-    raise HTTPException(
-        status_code=503,
-        detail="Camera functionality is unavailable in this version.",
-    )
-
-
-@app.get("/api/camera/status")
-def camera_status() -> Dict[str, Any]:
-    return {
-        "status": "unavailable",
-        "source": "none",
-        "fps": 0.0,
-        "resolution": [0, 0],
-        "error": "Camera functionality is unavailable in this version.",
-        "has_frame": False,
-    }
-
-
-# --- site camera 2 preview (disabled in this version) -------------------
-
-@app.get("/api/camera2/stream")
-async def camera2_stream(request: Request):
-    raise HTTPException(
-        status_code=503,
-        detail="Camera functionality is unavailable in this version.",
-    )
-
-
-@app.get("/api/camera2/snapshot")
-def camera2_snapshot():
-    raise HTTPException(
-        status_code=503,
-        detail="Camera functionality is unavailable in this version.",
-    )
-
-
-@app.get("/api/camera2/detections")
-def camera2_detections() -> Dict[str, Any]:
-    """Returns unavailable status since camera processing is removed."""
-    return ms.get_site_detections()
-
-
 # --- Phase 2C: Shift & Production Data API -----------------------------
 
 class CreateOperatorRequest(BaseModel):
@@ -1060,7 +723,7 @@ def end_shift(shift_id: int, req: EndShiftRequest) -> Dict[str, Any]:
             summary_notes=req.summary_notes,
         )
         return {"success": ok, "shift_id": shift_id, "status": req.status}
-    except ValueError as exc:
+    except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -1135,7 +798,7 @@ def log_issue(req: LogIssueRequest) -> Dict[str, Any]:
             downtime_minutes=req.downtime_minutes,
         )
         return {"success": True, "issue_id": issue_id}
-    except ValueError as exc:
+    except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -1162,7 +825,7 @@ def initiate_handover(req: InitiateHandoverRequest) -> Dict[str, Any]:
             notes=req.notes,
         )
         return {"success": True, "handover_id": handover_id}
-    except ValueError as exc:
+    except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -1183,5 +846,5 @@ def complete_handover(handover_id: int, req: CompleteHandoverRequest) -> Dict[st
             close_from_shift=req.close_from_shift,
         )
         return {"success": ok, "handover_id": handover_id, "to_shift_id": req.to_shift_id}
-    except ValueError as exc:
+    except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))

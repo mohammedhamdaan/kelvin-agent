@@ -1,16 +1,8 @@
 """
-Adapter between the existing print-monitor pipeline and the voice assistant.
+Adapter between the Kelvin6K database / machine state and the voice assistant.
 
-This is the ONLY place the assistant reads machine facts from. It sources them,
-in priority order, from:
-
-  1. the live in-memory PrinterState (when the camera loop is running in this
-     process) -- via the existing agent.print_monitor query API;
-  2. the SQLite machine_state table (written by the camera loop, so the
-     assistant works in a separate process or after a restart).
-
-No detection logic is duplicated here: layer detection, width measurement,
-debouncing and confidence all stay in agent/print_monitor.py.
+This provides machine facts sourcing them from the SQLite database (the
+print_jobs and machine_state tables).
 
 Every function returns a dict with an explicit `available` flag. Nothing is ever
 fabricated: unavailable means unavailable, and low confidence is flagged rather
@@ -22,19 +14,14 @@ from typing import Any, Dict, Optional
 
 from agent import config, db
 from agent.logging_setup import get_logger
-from agent.print_monitor import (
-    get_camera_status as _live_camera_status,
-    get_current_detection as _live_detection,
-)
 
 log = get_logger("MACHINE")
 
-# Optional live state, injected by main.py when the vision loop runs in-process.
 _live_state = None
 
 
 def bind_live_state(state) -> None:
-    """Lets the assistant read the in-process PrinterState directly."""
+    """Safe no-op kept for backwards compatibility."""
     global _live_state
     _live_state = state
 
@@ -43,7 +30,7 @@ _site_camera_service = None
 
 
 def bind_site_camera_service(service) -> None:
-    """Lets the assistant query the dedicated site camera (Camera 2) service."""
+    """Safe no-op kept for backwards compatibility."""
     global _site_camera_service
     _site_camera_service = service
 
@@ -55,17 +42,11 @@ def _fresh(timestamp: Optional[float]) -> bool:
 
 
 def _snapshot() -> Optional[Dict[str, Any]]:
-    """Newest trustworthy machine reading, from live state or the database."""
-    if _live_state is not None:
-        detection = _live_detection(_live_state)
-        if detection.get("status") != "CAMERA_ERROR" and _fresh(detection.get("timestamp")):
-            detection["source"] = "live"
-            return detection
-
+    """Newest trustworthy machine reading from the database."""
     row = db.get_latest_machine_state()
     if row and _fresh(row.get("timestamp")):
         return {
-            "printing": row.get("printing"),
+            "printing": bool(row.get("printing")),
             "status": row.get("status"),
             "layer_detected": row.get("status") in ("LAYER_DETECTED", "PRINTING"),
             "current_layer": row.get("current_layer"),
@@ -74,7 +55,7 @@ def _snapshot() -> Optional[Dict[str, Any]]:
             "width_unit": "mm",
             "confidence": row.get("confidence") or 0.0,
             "motion_score": row.get("motion_score"),
-            "camera_connected": row.get("camera_connected"),
+            "camera_connected": bool(row.get("camera_connected")),
             "completed_length_mm": row.get("completed_length_mm"),
             "timestamp": row.get("timestamp"),
             "source": "database",
@@ -97,10 +78,10 @@ def _confidence_note(confidence: Optional[float]) -> Optional[str]:
     return None
 
 
-# --- public API used as LLM tools ---------------------------------------
+# --- public API used as LLM tools / assistant methods --------------------
 
 def get_current_print_status() -> Dict[str, Any]:
-    """Whether printing is currently running, per the live camera/AI pipeline."""
+    """Whether printing is currently running, per the latest machine state."""
     snap = _snapshot()
     if snap is None:
         return _unavailable()
@@ -116,13 +97,7 @@ def get_current_print_status() -> Dict[str, Any]:
 
 
 def get_current_layer() -> Dict[str, Any]:
-    """
-    The current layer number.
-
-    The camera alone cannot know the absolute layer number, so this comes from
-    the active print job (updated by the machine link or the operator). If no
-    job is tracking it, that is reported rather than guessed.
-    """
+    """The current layer number from the active job or latest state."""
     job = db.get_active_job()
     if job and job.get("current_layer") is not None:
         return {
@@ -138,7 +113,7 @@ def get_current_layer() -> Dict[str, Any]:
 
     return _unavailable(
         "No current layer number is being tracked. It needs an active print job "
-        "or a machine link -- the camera alone cannot know the absolute layer number."
+        "or a machine link."
     )
 
 
@@ -176,12 +151,7 @@ def get_current_layer_width() -> Dict[str, Any]:
 
 
 def get_print_progress() -> Dict[str, Any]:
-    """
-    How much of the wall is printed and how much remains.
-
-    remaining_mm is always computed as max(total - completed, 0); it is never
-    read from an independently stored value.
-    """
+    """How much of the wall is printed and how much remains."""
     job = db.get_active_job()
     if job is None:
         return _unavailable(
@@ -208,26 +178,24 @@ def get_print_progress() -> Dict[str, Any]:
 
 
 def get_machine_status() -> Dict[str, Any]:
-    """Camera connection and overall machine/vision status."""
-    camera = {"connected": False, "status": "unavailable", "reason": "Camera functionality is unavailable in this version."}
+    """Machine and process status from the database."""
     snap = _snapshot()
     if snap is None:
         return _unavailable("No active machine state reading available.")
 
     return {
         "available": True,
-        "camera": camera,
-        "status": (snap or {}).get("status") or "idle",
-        "printing": (snap or {}).get("printing") or 0,
-        "confidence": (snap or {}).get("confidence"),
-        "motion_score": (snap or {}).get("motion_score"),
-        "source": (snap or {}).get("source") or "system",
-        "note": "Camera functionality is unavailable in this version.",
+        "status": snap.get("status") or "idle",
+        "printing": snap.get("printing") or 0,
+        "confidence": snap.get("confidence"),
+        "motion_score": snap.get("motion_score"),
+        "source": snap.get("source") or "system",
+        "note": "",
     }
 
 
 def get_machine_summary() -> Dict[str, Any]:
-    """Everything at once -- convenient for dashboards and 'how is it going?'."""
+    """Summary of print status, layer, width, and progress."""
     return {
         "print_status": get_current_print_status(),
         "layer": get_current_layer(),
@@ -237,7 +205,7 @@ def get_machine_summary() -> Dict[str, Any]:
     }
 
 
-# --- job management (used by tests and the operator CLI) ----------------
+# --- job management ------------------------------------------------------
 
 def start_print_job(
     job_name: str,
@@ -266,7 +234,6 @@ def update_progress(
 
 
 def get_site_people_count(force_refresh: bool = False) -> Dict[str, Any]:
-    """Returns unavailable because camera processing is removed from the backend."""
     return {
         "available": False,
         "people_count": 0,
@@ -278,7 +245,6 @@ def get_site_people_count(force_refresh: bool = False) -> Dict[str, Any]:
 
 
 def get_site_detections(force_refresh: bool = False) -> Dict[str, Any]:
-    """Returns unavailable because camera processing is removed from the backend."""
     return {
         "available": False,
         "provenance": "UNAVAILABLE",
@@ -287,4 +253,3 @@ def get_site_detections(force_refresh: bool = False) -> Dict[str, Any]:
         "people_count": 0,
         "supported_classes": [],
     }
-

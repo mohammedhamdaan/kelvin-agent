@@ -53,7 +53,7 @@ SYSTEM_PROMPT = (
     "ABOUT THE KELVIN6K PROJECT:\n"
     "- Kelvin6K is an advanced autonomous robotic 3D concrete printing construction system designed to print architectural walls, structural elements, and precast building components on-site or in precast facilities.\n"
     "- Material used in printing walls: A proprietary 3D-printable concrete mix / specialized cementitious mortar formulation with controlled rheology, utilizing an accelerator system (dosed dynamically at the print head / nozzle) and retarders to control setting time, slump, pumpability, and buildability layer-by-layer without sagging or collapsing.\n"
-    "- Key subsystems: 6-axis robotic arm or gantry crane with concrete extrusion nozzle, material delivery pump and hose line, dynamic chemical dosing (accelerator system), dual-camera computer vision (Camera 1 for layer height and nozzle monitoring; Camera 2 for shop-floor tracking and safety), and real-time sensor monitoring.\n"
+    "- Key subsystems: 6-axis robotic arm or gantry crane with concrete extrusion nozzle, material delivery pump and hose line, dynamic chemical dosing (accelerator system), SQLite operations database (`kelvin6k.db`), and hybrid RAG knowledge brain.\n"
     "\n"
     "VOICE & SPEECH-TO-TEXT (STT) HOMOPHONE UNDERSTANDING:\n"
     "- User inputs come directly from live voice Speech-to-Text, which may transcribe spoken numbers as homophones. For example, 'to walls' or 'too walls' means '2 walls'. Similarly, 'for walls' means '4 walls', 'one wall' or 'won wall' means '1 wall'. Names like 'hamdan' or 'hamdaan' refer to operator Hamdan.\n"
@@ -61,15 +61,15 @@ SYSTEM_PROMPT = (
     "\n"
     "YOUR ROLE & OBJECTIVES:\n"
     "1. You assist shop-floor operators and supervisors with full autonomy: monitoring printing, checking machine health, managing employee shifts and attendance, tracking 3D printing jobs and overtime, recording completed wall production, troubleshooting issues, and learning new knowledge.\n"
-    "2. You have direct access to system tools to inspect (READ) and modify (WRITE) the database, live vision, machine status, and RAG knowledge brain.\n"
-    "3. NEVER invent machine numbers or shift data when facts are required. Call the appropriate tool (e.g. get_current_print_status, get_machine_status, get_current_layer, get_current_layer_width, get_print_progress, query_shifts_and_attendance, query_operator_wall_production, etc.) to read the facts from the database, sensors, or camera.\n"
+    "2. You have direct access to system tools to inspect (READ) and modify (WRITE) the SQLite database (`kelvin6k.db`), check machine and print progress status, and query or learn into the RAG knowledge brain.\n"
+    "3. NEVER invent machine numbers or shift data when facts are required. Call the appropriate tool (e.g. `execute_sql_query`, `execute_sql_write`, `get_current_print_status`, `get_machine_status`, `get_current_layer`, `get_print_progress`, `query_shifts_and_attendance`, `query_operator_wall_production`, `search_rag_brain`, etc.) to read or modify facts in the database.\n"
     "4. When the user asks you to perform an action (e.g. record completed walls, start a shift, log an issue, remember a fix, update a job), execute the corresponding tool immediately.\n"
-    "   - When an operator says 'Hamdan completed printing two walls' or 'I printed to walls', call record_operator_wall_production(operator_name='Hamdan', walls_completed=2) or start_or_update_printing_job / store_learned_knowledge, and confirm naturally (e.g. 'Got it, I have logged that Hamdan completed printing 2 walls today.').\n"
+    "   - When an operator says 'Hamdan completed printing two walls' or 'I printed to walls', call record_operator_wall_production(operator_name='Hamdan', walls_completed=2) or start_or_update_printing_job / learn_and_store_in_rag_brain, and confirm naturally (e.g. 'Got it, I have logged that Hamdan completed printing 2 walls today.').\n"
     "   - When asked 'How many walls did Hamdan complete?', call query_operator_wall_production(operator_name='Hamdan') to look up his completed walls and report the exact count naturally.\n"
-    "   - When asked 'Can you tell me about this project?' or 'Which material is used in printing walls?', use search_rag_brain_knowledge or search_docs if needed, along with your system knowledge of Kelvin6K, to provide a smart, natural, conversational answer. Never return raw copy-pasted markdown chunks or say 'Sorry, I didn't understand that'.\n"
+    "   - When asked 'Can you tell me about this project?' or 'Which material is used in printing walls?', use search_rag_brain or search_docs if needed, along with your system knowledge of Kelvin6K, to provide a smart, natural, conversational answer. Never return raw copy-pasted markdown chunks or say 'Sorry, I didn't understand that'.\n"
     "5. If a request is open-ended or missing details (e.g., 'I am facing a problem', 'Start my shift' without an employee name), naturally converse in friendly, conversational English (e.g., 'I am here to help. What problem are you facing?').\n"
     "6. Standard printing time rule: Standard printing hours is 9.0 hours. Any printing duration beyond 9.0 hours is overtime (overtime_hours = max(duration - 9.0, 0.0)). The printing tools handle this math automatically.\n"
-    "7. When an operator describes a fix or new procedure they want you to remember (e.g. 'Remember this fix', 'Learn this', 'Save this SOP'), call store_learned_knowledge to persistently store it in the RAG brain.\n"
+    "7. When an operator describes a fix or new procedure they want you to remember (e.g. 'Remember this fix', 'Learn this', 'Save this SOP'), call learn_and_store_in_rag_brain to persistently store it in the RAG brain.\n"
     "\n"
     "HARDWARE MONITORING PRINCIPLE:\n"
     "You are a monitoring, logging, and advisory system only. Never claim to physically drive motors, actuate pumps, or alter hardware settings on the physical machine. If telemetry or sensor metrics are unavailable, state clearly that they are not connected or currently unavailable.\n"
@@ -265,7 +265,41 @@ def log_or_update_shift_issue(
     )
 
 
-def store_learned_knowledge(
+def execute_sql_query(query: str) -> List[Dict[str, Any]]:
+    """Execute a read-only SQL SELECT query on the kelvin6k SQLite database. Returns list of rows as dictionaries."""
+    import sqlite3
+    db_path = config.DATABASE_PATH
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(query)
+        rows = [dict(r) for r in cur.fetchall()]
+        return rows
+    except Exception as exc:
+        return [{"error": str(exc)}]
+    finally:
+        conn.close()
+
+
+def execute_sql_write(query: str) -> Dict[str, Any]:
+    """Execute an INSERT, UPDATE, or DELETE SQL statement on the kelvin6k SQLite database."""
+    import sqlite3
+    db_path = config.DATABASE_PATH
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        cur = conn.cursor()
+        cur.execute(query)
+        conn.commit()
+        return {"success": True, "rows_affected": cur.rowcount, "lastrowid": cur.lastrowid}
+    except Exception as exc:
+        conn.rollback()
+        return {"success": False, "error": str(exc)}
+    finally:
+        conn.close()
+
+
+def learn_and_store_in_rag_brain(
     title: str,
     category: str = "Operations",
     content: str = "",
@@ -273,21 +307,27 @@ def store_learned_knowledge(
     solution: str = "",
 ) -> dict:
     """Persistently store new operational knowledge, SOP, parameter, or issue fix into the RAG brain for immediate retrieval."""
-    from agent.rag.ingest import learn_and_store_in_rag_brain
-    return learn_and_store_in_rag_brain(
+    from agent.rag.ingest import learn_and_store_in_rag_brain as _rag_learn
+    return _rag_learn(
         title, category, content, problem or None, solution or None
     )
 
 
-def search_rag_brain_knowledge(query: str) -> dict:
+store_learned_knowledge = learn_and_store_in_rag_brain
+
+
+def search_rag_brain(query: str) -> dict:
     """Search both RAG documentation manuals/SOPs and historical database shift issues for solutions, procedures, or specifications."""
     q_clean = (query or "").strip().lower()
     if not q_clean or len(q_clean) < 3:
         return {"found": False, "results": [], "message": "No query provided for RAG search."}
     if any(q_clean == g for g in ("hi", "hello", "hey", "thanks", "thank you", "bye", "good morning", "good evening", "ok", "okay")):
         return {"found": False, "results": [], "message": "Conversational greeting does not require documentation lookup."}
-    from agent.rag.retriever import search_rag_brain
-    return search_rag_brain(query)
+    from agent.rag.retriever import search_rag_brain as _rag_search
+    return _rag_search(query)
+
+
+search_rag_brain_knowledge = search_rag_brain
 
 
 def get_current_print_status() -> dict:
@@ -311,7 +351,7 @@ def get_print_progress() -> dict:
 
 
 def get_machine_status() -> dict:
-    """Get overall machine and camera status, including camera connection, detection confidence and motion."""
+    """Get overall machine and print status."""
     return ms.get_machine_status()
 
 
@@ -343,17 +383,11 @@ def get_active_shift() -> dict:
     }
 
 
-def get_site_people_count() -> dict:
-    """Get the current people count detected on site via dedicated Camera 2."""
-    return ms.get_site_people_count()
-
-
-def get_site_detections() -> dict:
-    """Get the current structured object detections and segmentation entities from dedicated Camera 2."""
-    return ms.get_site_detections()
-
-
 TOOLS: List[Callable] = [
+    execute_sql_query,
+    execute_sql_write,
+    search_rag_brain,
+    learn_and_store_in_rag_brain,
     list_or_search_employees,
     create_or_update_employee,
     start_employee_shift,
@@ -364,20 +398,18 @@ TOOLS: List[Callable] = [
     start_or_update_printing_job,
     query_printing_jobs_and_overtime,
     log_or_update_shift_issue,
-    store_learned_knowledge,
-    search_rag_brain_knowledge,
+    get_active_shift,
     get_current_print_status,
     get_current_layer,
     get_current_layer_width,
     get_print_progress,
     get_machine_status,
-    get_active_shift,
-    get_site_people_count,
-    get_site_detections,
     search_docs,
 ]
 
 _TOOLS_BY_NAME = {fn.__name__: fn for fn in TOOLS}
+_TOOLS_BY_NAME["store_learned_knowledge"] = store_learned_knowledge
+_TOOLS_BY_NAME["search_rag_brain_knowledge"] = search_rag_brain_knowledge
 
 
 @dataclass
@@ -696,6 +728,29 @@ class Assistant:
 
         return casual_map.get(clean)
 
+    @staticmethod
+    def _prune_chat_history(chat: Any, max_messages: int = 12) -> None:
+        """
+        Safely prunes chat history so that:
+        1. It never cuts between a model function_call and user function_response.
+        2. It only starts at a legitimate user text prompt.
+        """
+        for attr in ("_curated_history", "_comprehensive_history"):
+            history = getattr(chat, attr, None)
+            if history and len(history) > max_messages:
+                start_idx = max(0, len(history) - max_messages)
+                cut_idx = None
+                for i in range(start_idx, len(history)):
+                    msg = history[i]
+                    role = getattr(msg, "role", None)
+                    parts = getattr(msg, "parts", []) or []
+                    has_fn_resp = any(getattr(p, "function_response", None) is not None for p in parts)
+                    if role == "user" and not has_fn_resp:
+                        cut_idx = i
+                        break
+                if cut_idx is not None and cut_idx > 0:
+                    setattr(chat, attr, history[cut_idx:])
+
     def _ask_llm(
         self,
         question: str,
@@ -711,10 +766,7 @@ class Assistant:
                 return None
 
             max_turns = 10
-            if hasattr(chat, "_curated_history") and len(chat._curated_history) > max_turns:
-                chat._curated_history = chat._curated_history[-max_turns:]
-            if hasattr(chat, "_comprehensive_history") and len(chat._comprehensive_history) > max_turns:
-                chat._comprehensive_history = chat._comprehensive_history[-max_turns:]
+            self._prune_chat_history(chat, 12)
 
             try:
                 response = chat.send_message(question)
@@ -797,18 +849,19 @@ class Assistant:
             return
 
         max_turns = 6
-        if hasattr(chat, "_curated_history") and len(chat._curated_history) > max_turns:
-            chat._curated_history = chat._curated_history[-max_turns:]
-        if hasattr(chat, "_comprehensive_history") and len(chat._comprehensive_history) > max_turns:
-            chat._comprehensive_history = chat._comprehensive_history[-max_turns:]
+        self._prune_chat_history(chat, 12)
 
-        response_stream = chat.send_message_stream(question)
-        accumulated = []
-        for chunk in response_stream:
-            text = chunk.text or ""
-            if text:
-                accumulated.append(text)
-                yield text
+        try:
+            response_stream = chat.send_message_stream(question)
+            accumulated = []
+            for chunk in response_stream:
+                text = chunk.text or ""
+                if text:
+                    accumulated.append(text)
+                    yield text
+        except Exception:
+            self._chats.pop(session_id, None)
+            raise
 
         full_raw = "".join(accumulated).strip()
         if full_raw:
@@ -892,54 +945,7 @@ class Assistant:
     )
 
     def _phrase_with_claude(self, question: str, result) -> Optional[str]:
-        """
-        Turns router facts into a spoken English sentence using Claude.
-
-        Returns None on ANY problem, so the caller falls back to the
-        deterministic sentence. A voice assistant that goes silent because a
-        network call failed is worse than one that sounds slightly robotic.
-        """
-        if not config.ANTHROPIC_API_KEY or self._claude_disabled:
-            return None
-        try:
-            from agent.anthropic_qa import _get_client
-
-            payload = {
-                "intent": result.intent.value,
-                "available": result.available,
-                "facts": result.facts,
-                "reason": result.reason,
-                "documentation": result.knowledge,
-            }
-            response = _get_client().messages.create(
-                model=config.ANTHROPIC_MODEL,
-                max_tokens=200,
-                timeout=8.0,
-                system=self._CLAUDE_SYSTEM,
-                messages=[{
-                    "role": "user",
-                    "content": (f"QUESTION: {question}\n\n"
-                                f"FACTS: {json.dumps(payload, default=str)}"),
-                }],
-            )
-            text = "".join(
-                block.text for block in response.content if getattr(block, "type", "") == "text"
-            ).strip()
-            return text or None
-        except Exception as exc:
-            # A bad key or a missing workspace fails identically on every call,
-            # so retrying it would add seconds of silence to each question. Stop
-            # trying after the first configuration failure and say so once; the
-            # deterministic wording carries the conversation.
-            name = type(exc).__name__
-            if name in ("AuthenticationError", "PermissionDeniedError", "NotFoundError", "ModuleNotFoundError", "ImportError"):
-                self._claude_disabled = True
-                log.warning(
-                    "Claude is disabled for this session: %s. The assistant will use its "
-                    "own wording. Check ANTHROPIC_API_KEY / ANTHROPIC_WORKSPACE_ID.", name)
-            else:
-                log.warning("Claude phrasing unavailable (%s); using the local wording.", name)
-            return None
+        return None
 
     def _answer_locally(self, question: str, routed: Optional[Any] = None) -> str:
         """

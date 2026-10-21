@@ -41,6 +41,7 @@ class TestSemanticNLU(unittest.TestCase):
 
         # 2. Verify NLU invokes the SDK with config.GEMINI_MODEL directly
         with patch("agent.config.GEMINI_API_KEY", "test-api-key"), \
+             patch("agent.assistant._shared_gemini_client", None), \
              patch("google.genai.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_resp = MagicMock()

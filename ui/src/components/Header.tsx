@@ -1,10 +1,9 @@
-/** Dashboard header: robot / machine / camera / communication status. */
+/** Dashboard header: Voice Assistant, LLM Brain, STT, and RAG status. */
 
 import "./Header.css";
-import type { HealthResponse, StatusResponse } from "../types";
+import type { HealthResponse } from "../types";
 
 interface Props {
-  status: StatusResponse | null;
   health: HealthResponse | null;
   connected: boolean;
 }
@@ -31,11 +30,9 @@ function StatusTile({
   );
 }
 
-export function Header({ status, health, connected }: Props) {
-  const robotOnline = status?.robot.robot_online.value === true;
-  const cameraLive = status?.camera.status === "live";
-  const machineState = status?.material.machine_state.value ?? null;
-  const machineLink = status?.robot.communication.machine_link;
+export function Header({ health, connected }: Props) {
+  const llmOnline = Boolean(connected && health?.llm && health.llm !== "offline-router");
+  const modelName = health?.llm_model || health?.llm || "Gemini";
 
   return (
     <header className="app-header">
@@ -45,48 +42,44 @@ export function Header({ status, health, connected }: Props) {
           K6
         </div>
         <div>
-          <h1>KELVIN6K ROBOT AI</h1>
-          <span className="brand-sub">Industrial Print Monitoring &amp; Voice Assistant</span>
+          <h1>KELVIN6K VOICE ASSISTANT</h1>
+          <span className="brand-sub">Autonomous Agentic Brain · SQLite DB · RAG Knowledge</span>
         </div>
       </div>
 
       <div className="status-tiles">
         <StatusTile
-          label="Robot"
-          value={robotOnline ? "ONLINE" : "OFFLINE"}
-          tone={robotOnline ? "ok" : "bad"}
-          detail={status?.robot.robot_status.reason}
-        />
-        <StatusTile
-          label="Machine"
-          value={machineState ? String(machineState).toUpperCase() : "UNAVAILABLE"}
-          tone={machineState ? "warn" : "muted"}
-          detail={
-            status?.material.machine_state.provenance === "MOCK"
-              ? "Simulated value — not the real machine."
-              : status?.material.machine_state.reason
-          }
-        />
-        <StatusTile
-          label="Camera"
-          value={(status?.camera.status ?? "unknown").toUpperCase()}
-          tone={cameraLive ? "ok" : "bad"}
-          detail={status?.camera.error ?? undefined}
-        />
-        <StatusTile
-          label="Comms"
+          label="API"
           value={connected ? "CONNECTED" : "OFFLINE"}
           tone={connected ? "ok" : "bad"}
-          detail={machineLink?.reason}
+          detail={connected ? "Kelvin6K API server is reachable" : "Backend unreachable"}
+        />
+        <StatusTile
+          label="Brain"
+          value={llmOnline ? "ONLINE" : "OFFLINE ROUTER"}
+          tone={llmOnline ? "ok" : "warn"}
+          detail={`Model: ${modelName}`}
+        />
+        <StatusTile
+          label="STT"
+          value={connected ? "WHISPER" : "OFFLINE"}
+          tone={connected ? "ok" : "bad"}
+          detail={health?.stt || "faster-whisper"}
+        />
+        <StatusTile
+          label="RAG"
+          value={health ? `${health.rag_chunks} CHUNKS` : "IDLE"}
+          tone={health?.rag_chunks ? "ok" : "muted"}
+          detail={`Mode: ${health?.rag_mode || "hybrid"}`}
         />
       </div>
 
       <div className="header-chips">
         {health ? (
           <>
-            <span className="header-chip">LLM: {health.llm}</span>
-            <span className="header-chip">STT: {health.stt}</span>
-            <span className="header-chip">RAG: {health.rag_chunks} · {health.rag_mode}</span>
+            <span className="header-chip">LLM: {modelName}</span>
+            <span className="header-chip">TTS: {health.tts || "ElevenLabs / pyttsx3"}</span>
+            <span className="header-chip">RAG: {health.rag_mode}</span>
           </>
         ) : null}
         <span className="header-chip header-chip-readonly">READ-ONLY</span>

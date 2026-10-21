@@ -141,7 +141,7 @@ def _call_semantic_model(question: str) -> Optional[str]:
         if client is None:
             client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-        model_name = "gemini-flash-lite-latest"
+        model_name = config.GEMINI_MODEL or "gemini-flash-lite-latest"
 
         def _do_call():
             resp = client.models.generate_content(
@@ -157,9 +157,9 @@ def _call_semantic_model(question: str) -> Optional[str]:
             return (resp.text or "").strip()
 
         fut = _nlu_executor.submit(_do_call)
-        return fut.result(timeout=1.0)
+        return fut.result(timeout=5.0)
     except concurrent.futures.TimeoutError:
-        log.warning("[NLU] Gemini semantic fallback timed out (>1.0s)")
+        log.warning("[NLU] Gemini semantic fallback timed out (>5.0s)")
         return None
     except Exception as exc:
         log.warning("[NLU] Gemini semantic fallback failed: %s", exc)

@@ -25,8 +25,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, ask, getHealth, getOrCreateSessionId, speakOnServer, transcribeAudio } from "../api";
-import type { HealthResponse, MetrologyAnnouncementResponse } from "../types";
+import { ask, getHealth, getOrCreateSessionId, speakOnServer, transcribeAudio } from "../api";
+import type { HealthResponse } from "../types";
 import { KelvinCore3D, type CoreState } from "./KelvinCore3D";
 import { MicDiagnostic } from "./MicDiagnostic";
 import { useAudioPlayer } from "../hooks/useAudioPlayer";
@@ -218,7 +218,6 @@ const DEV_MODE =
 /** Conversation history survives a page reload. */
 const HISTORY_KEY = "kelvin6k.conversation";
 const HISTORY_LIMIT = 100;
-const METROLOGY_POLL_MS = 1500;
 
 function loadHistory(): Exchange[] {
   try {
@@ -276,7 +275,6 @@ export function VoiceAssistant({ autoSpeak: initialAutoSpeak = true }: { autoSpe
     serverTtsRef.current = serverTts;
   }, [serverTts]);
 
-  const lastSpokenAnnouncementRef = useRef(0);
 
   const recorder = useRecorder({ autoStopOnSilence: false });
   const player = useAudioPlayer();
@@ -507,32 +505,6 @@ export function VoiceAssistant({ autoSpeak: initialAutoSpeak = true }: { autoSpe
     }
   }, [isRecording, isProcessing, speaking, busy, recorder, submit]);
 
-  // Metrology layer announcements
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      if (cancelled || busy || isRecording || isProcessing) return;
-      if (!autoSpeakRef.current) return;
-      try {
-        const response = await fetch(`${API_BASE}/api/metrology/announcement`);
-        if (!response.ok) return;
-        const data = (await response.json()) as MetrologyAnnouncementResponse;
-        const announcement = data.announcement;
-        if (!announcement || cancelled) return;
-        if (announcement.id <= lastSpokenAnnouncementRef.current) return;
-        lastSpokenAnnouncementRef.current = announcement.id;
-        console.info("[METROLOGY] speaking:", announcement.text);
-        await speakRef.current?.(announcement.text);
-      } catch {
-        /* backend unreachable, retry next tick */
-      }
-    };
-    const timer = window.setInterval(() => void poll(), METROLOGY_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [busy, isRecording, isProcessing]);
 
   useEffect(() => {
     saveHistory(history);

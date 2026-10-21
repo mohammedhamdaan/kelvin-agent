@@ -315,8 +315,15 @@ class TestAgenticBrainAndOvertime(unittest.TestCase):
     # 6. Assistant Initialization, Tools, and Offline Fallback
     # -------------------------------------------------------------------------
     def test_assistant_tool_declarations_and_offline_fallback(self):
-        """Verify all 17 agentic tools are defined and offline fallback works."""
-        self.assertEqual(len(TOOLS), 19)  # 10 DB/RAG tools + 9 sensor/camera/doc tools
+        """Verify agentic voice assistant tools are defined and offline fallback works."""
+        tool_names = [t.__name__ for t in TOOLS]
+        self.assertIn("execute_sql_query", tool_names)
+        self.assertIn("execute_sql_write", tool_names)
+        self.assertIn("search_rag_brain", tool_names)
+        self.assertIn("learn_and_store_in_rag_brain", tool_names)
+        self.assertNotIn("get_site_people_count", tool_names)
+        self.assertNotIn("get_site_detections", tool_names)
+        self.assertEqual(len(TOOLS), 21)
 
         bot = Assistant(use_llm=False)
         self.assertFalse(bot.use_llm)

@@ -743,6 +743,21 @@ VALID_ISSUE_SEVERITIES = {
     "Warning", "Info",
 }
 
+SEVERITY_NORM = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "critical": "Critical",
+    "Low": "Low",
+    "Medium": "Medium",
+    "High": "High",
+    "Critical": "Critical",
+    "warning": "warning",
+    "info": "info",
+    "Warning": "warning",
+    "Info": "info",
+}
+
 
 def log_issue(
     shift_id: int,
@@ -774,6 +789,7 @@ def log_issue(
         raise ValueError("description or problem_description cannot be empty")
     if severity not in VALID_ISSUE_SEVERITIES:
         raise ValueError(f"Invalid severity: {severity}. Must be one of {VALID_ISSUE_SEVERITIES}")
+    severity = SEVERITY_NORM.get(severity, severity)
     if downtime_minutes < 0.0:
         raise ValueError("downtime_minutes cannot be negative")
 
@@ -890,6 +906,7 @@ def update_issue(
     if severity is not None:
         if severity not in VALID_ISSUE_SEVERITIES:
             raise ValueError(f"Invalid severity: {severity}. Must be one of {VALID_ISSUE_SEVERITIES}")
+        severity = SEVERITY_NORM.get(severity, severity)
         sets.append("severity = ?")
         params.append(severity)
     if downtime_minutes is not None:

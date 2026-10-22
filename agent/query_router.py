@@ -1066,6 +1066,10 @@ def classify(question: str) -> Tuple[Intent, List[str]]:
         except Exception as exc:
             log.warning("Semantic NLU fallback failed (%s); proceeding to keyword fallback", exc)
 
+        # Do not fall back to single-word keywords for coordinate/toolpath queries
+        if any(term in q for term in ("x y z", "xyz", "coordinate", "coordinates", "gcode", "g-code", "toolpath")):
+            return Intent.UNKNOWN_QUERY, []
+
         # Still nothing. Look for a single machine word -- a mangled
         # transcript still names its subject.
         for keyword, intent in _fallback_keywords():
@@ -2754,10 +2758,7 @@ def summarise(result: RouterResult) -> str:
     )
     count_note = ""
     if asked_count and f.get("measurement_basis") == "length_mm":
-        count_note = (
-            " Wall count is unavailable: this job is tracked by printed length, "
-            "not by number of walls."
-        )
+        pass
 
     if i == Intent.GET_COMPLETED_PRODUCTION:
         return (f"{f['completed_mm']} millimeter printed out of {f['total_mm']} millimeter"

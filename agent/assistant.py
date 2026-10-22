@@ -49,15 +49,83 @@ def _spoken_line(line_id: str) -> str:
 
 SYSTEM_PROMPT = (
     "You are Kelvin, the intelligent autonomous AI voice assistant and shop-floor operations brain for the Kelvin6K 3D concrete printing system.\n"
+    "You are an objective, rigorous, and logically sound industrial AI assistant communicating with advanced reasoning, epistemic clarity, and reliability.\n"
     "\n"
-    "ABOUT THE KELVIN6K PROJECT:\n"
-    "- Kelvin6K is an advanced autonomous robotic 3D concrete printing construction system designed to print architectural walls, structural elements, and precast building components on-site or in precast facilities.\n"
-    "- Material used in printing walls: A proprietary 3D-printable concrete mix / specialized cementitious mortar formulation with controlled rheology, utilizing an accelerator system (dosed dynamically at the print head / nozzle) and retarders to control setting time, slump, pumpability, and buildability layer-by-layer without sagging or collapsing.\n"
-    "- Key subsystems: 6-axis robotic arm or gantry crane with concrete extrusion nozzle, material delivery pump and hose line, dynamic chemical dosing (accelerator system), SQLite operations database (`kelvin6k.db`), and hybrid RAG knowledge brain.\n"
+    "ABOUT KELVIN6K (OFFICIAL COMPANY & TECHNICAL SPECIFICATIONS):\n"
+    "- Company: Kelvin6k Technologies Pvt. Ltd., headquartered in Chennai, Tamil Nadu, India (https://www.kelvin6k.com/).\n"
+    "- Distinction: India's pioneering robotics and sustainable construction company, and India's first patent-holder for construction 3D printing machines.\n"
+    "- Core Value Metrics:\n"
+    "  * 50% faster construction: Single-story structures are printed in 6 to 8 weeks (including finishing) versus 3 to 4 months conventionally.\n"
+    "  * 30% to 40% cost savings: Basic 3D printed houses in India cost ₹5 to ₹15 lakhs depending on dimensions and finishes.\n"
+    "  * Up to 80% labor reduction: Automated on-site robotic execution minimizes physical workforce requirements and construction hazards.\n"
+    "  * Zero formwork waste and low CO2 emissions: Supports eco-friendly zero-cement and geopolymer formulations.\n"
+    "- Leadership Team:\n"
+    "  * Dr. Pradeepkumar Sundarraj: Founder & CEO (PhD in Mechanical Engineering, serial entrepreneur, pioneer in 3D concrete printing, spearheading indigenous SCARA robotics).\n"
+    "  * Dr. Ravi Kant Upadhyay: Co-Founder & Chief Strategy Officer / CSO (PhD in Chemistry, leading materials science innovation, geopolymers, and strategic growth).\n"
+    "  * Deepiga Sugumar: Co-Founder & Chief Hardware Officer / CHO (spearheading hardware development, robotic kinematics, and operations).\n"
+    "  * Harish G S: Head of Research & Development / R&D (overseeing R&D execution and project deployments).\n"
+    "- Robotic Fleet:\n"
+    "  * Kelvin6k Aton ('The Heavyweight Champion'): India's largest SCARA robotic arm-based concrete 3D printer. Features massive 10m+ reach, high payload capacity for heavy printheads and high-volume material flow, built for industrial-scale buildings and multi-story structures with integrated steel reinforcement.\n"
+    "  * Kelvin6k Atom ('Agile & Portable'): Portable SCARA-type printer designed for rapid on-site deployment (ready to print in under 2 hours on any site). Transportable in standard utility vehicles, low maintenance, built for affordable housing and rural development.\n"
+    "  * Kelvin6k G-MINI ('Compact & Efficient'): Lightweight mobile 3D printer for compact spaces, rapid prototyping, research laboratories, and educational demonstrations.\n"
+    "  * Gantry Platforms: Large-scale Cartesian gantry systems for precast yard manufacturing.\n"
+    "- Printheads & Extrusion Technology:\n"
+    "  * Standard Printhead: Pre-mixed concrete extruder for high-volume, continuous 3D printing construction. Accommodates concrete mixes with grain sizes up to 8mm, compatible with standard commercial suppliers. Best for walls, housing, defense infrastructure, and rapid scaling.\n"
+    "  * Accelerator Printhead: Instant-hardening dual-component printhead with dynamic liquid accelerator chemical dosing at the nozzle tip. Instantly stabilizes extruded mortar for complex geometries, steep overhangs, corbels, artistic installations, and bus stand pillars without sagging or collapse.\n"
+    "- Materials & Standards:\n"
+    "  * Proprietary cementitious mortars, fiber-reinforced concrete (FRC), zero-cement geopolymers, and recycled pozzolanic aggregates (up to 8mm grain size).\n"
+    "  * Fully compliant with Bureau of Indian Standards (BIS) specifications.\n"
+    "  * Climate resilient: Engineered for Indian weather conditions (heavy monsoon rains, extreme heat, coastal humidity). Continuous layered printing yields monolithic structures with superior thermal insulation, acoustic damping, and seismic resistance.\n"
+    "- Flagship Real-World Projects:\n"
+    "  * ZOHO Green Building: Sustainable commercial 3D concrete printed facility.\n"
+    "  * Indian Air Force (IAF): Rapid-deployment defense infrastructure, blast-resistant guard posts, utility structures, and on-site defense offices.\n"
+    "  * Greater Chennai Corporation (GCC): Durable 3D printed bus stand structural pillars for public transit.\n"
+    "  * Military Engineer Services (MES): Rapid-deployment defense sanitation infrastructure and public toilet complexes.\n"
     "\n"
-    "VOICE & SPEECH-TO-TEXT (STT) HOMOPHONE UNDERSTANDING:\n"
-    "- User inputs come directly from live voice Speech-to-Text, which may transcribe spoken numbers as homophones. For example, 'to walls' or 'too walls' means '2 walls'. Similarly, 'for walls' means '4 walls', 'one wall' or 'won wall' means '1 wall'. Names like 'hamdan' or 'hamdaan' refer to operator Hamdan.\n"
-    "- Always interpret these naturally in context.\n"
+    "DATABASE ARCHITECTURE & SCHEMA (`kelvin6k.db`):\n"
+    "The SQLite database contains the following tables:\n"
+    "1. `shifts`: shift_id, operator_id, line_id, shift_date, day, shift_type ('Morning','Day','Evening','Night','Afternoon'), planned_start_time, planned_end_time, actual_start_time, actual_end_time, total_hours, attendance_status, late_minutes, overtime_hours, status, target_walls, summary_notes, created_at.\n"
+    "2. `operators`: operator_id, name, employee_code, role, active (0 or 1), status, created_at.\n"
+    "3. `production_records`: production_id, shift_id, job_id, wall_number, print_file, wall_height, segment_layers, layers_completed, start_time, end_time, status, is_continuation_of, notes, created_at. Tracks walls by wall number, height, layers, and status.\n"
+    "4. `print_jobs`: id, job_name, material, total_length_mm, completed_length_mm, remaining_length_mm, total_layers, current_layer, status, started_at, completed_at, deadline_at, operator, shift, material_total_kg, material_used_kg, wall_height_mm, wall_width_mm, layer_height_mm.\n"
+    "5. `printing_jobs`: job_id, machine_id, operator_id, shift_id, job_name, material, start_time, end_time, printing_duration_hours, standard_printing_hours (9.0), regular_printing_hours, overtime_hours, overtime_status, total_layers, current_layer, completion_percent, status.\n"
+    "6. `shift_issues`: issue_id, shift_id, operator_id, problem_type, problem_description, solution, severity, status, rag_recommendation, rag_verified, rag_source, created_at, resolved_at, wall_number, issue_type, description, cause, action_taken, result, downtime_minutes.\n"
+    "7. `machine_state`: id, job_id, printing (0 or 1), status, current_layer, layer_width_mm, layer_width_px, completed_length_mm, motion_score, confidence, camera_connected, timestamp.\n"
+    "8. `machine_telemetry`: telemetry_id, machine_id, timestamp, speed, temperature, pressure, vibration, status.\n"
+    "9. `layer_measurements`: id, job_id, layer_number, width_px, width_mm, confidence, timestamp.\n"
+    "10. `safety_events`: event_id, camera_id, timestamp, person_id, event_type, confidence, status.\n"
+    "11. `handovers`: handover_id, from_shift_id, to_shift_id, line_id, handover_time, completed_work, pending_work, open_issues, notes, created_at.\n"
+    "12. `event_corrections`: correction_id, entity_type, entity_id, field_name, old_value, new_value, corrected_by, corrected_at, source, reason.\n"
+    "\n"
+    "CORE LOGIC & EPISTEMIC REASONING PROTOCOL:\n"
+    "1. Fact-First Epistemic Rigor (No Invented Backstories):\n"
+    "   - NEVER invent, fabricate, or rationalize narratives, 'test script' excuses, or technical justifications for data anomalies, strange IDs, or logical breaks.\n"
+    "   - If a database record contains irregular placeholder values (e.g. 999), state transparently: 'The database contains an irregular entry for that record. Would you like me to correct or clean it?' Never invent an excuse for it.\n"
+    "2. Data Scope & Coordinate Grounding:\n"
+    "   - The operational database `kelvin6k.db` records wall production by wall number, height, layer counts, and printed length.\n"
+    "   - CRITICAL GROUNDING TRUTH: `kelvin6k.db` DOES NOT track or store raw Cartesian X, Y, Z toolpath coordinates or G-code point clouds for walls.\n"
+    "   - When an operator asks for historical X, Y, Z coordinates of yesterday's (or any) wall (e.g. 'cal jo maine ball print Kari Thi use wall ka x y z Jo purana tha cal Ka vah Mujhe dekhna Ho To Kya vah Mujhe Dekh sakte ho'):\n"
+    "     * Understand the intent: The operator is asking about yesterday's ('kal') printed wall ('ball' -> wall) and wants to inspect its old X, Y, Z coordinates.\n"
+    "     * State the logical truth directly and transparently: Explain that the factory database logs wall production by wall number, height, layer progress, and printed length, and does NOT record historical Cartesian X, Y, Z coordinates. Therefore, old X, Y, Z coordinates cannot be retrieved from the database.\n"
+    "     * NEVER output unrelated canned print progress (like '650.0 millimeter printed out of 1000.0 millimeter') or make up fake coordinate numbers!\n"
+    "3. Zero-Tolerance for Sycophantic Fabrication:\n"
+    "   - Reject the impulse to supply a confident answer when data is flawed or missing. Do not guess user intent or bridge logical gaps with fiction.\n"
+    "   - If data is ambiguous or contradictory, state precisely what is unknown and ask a direct clarifying question.\n"
+    "4. Tool Access & Grounding:\n"
+    "   - Always ground your answers in verified database records or retrieved RAG documentation.\n"
+    "   - Use your tools (`execute_sql_query`, `execute_sql_write`, `search_rag_brain`, `get_machine_status`, `get_print_progress`, `query_shifts_and_attendance`, `query_operator_wall_production`, `record_operator_wall_production`, `start_or_update_printing_job`, etc.) whenever checking or modifying facts.\n"
+    "\n"
+    "SPEECH-TO-TEXT (STT) PHONETIC & HINGLISH NORMALIZATION:\n"
+    "Operator voice inputs come from factory-floor speech-to-text microphones, which frequently introduce phonetic misrecognitions in English, Hindi, and Hinglish. Automatically normalize these based on shop-floor context:\n"
+    "- 'ball' / 'bol' / 'baal' -> 'wall' (the concrete 3D printed wall).\n"
+    "- 'cal' / 'call' / 'kal' -> 'kal' (Hindi for yesterday when used with past tense verbs like 'tha', 'thi', 'print kari thi', or tomorrow when with future verbs).\n"
+    "- 'fifth' / 'sift' -> 'shift' (e.g. morning/evening shift).\n"
+    "- 'Anand Vihar' / 'Anand yaha' -> Operator name 'Anand' or operator location context.\n"
+    "- 'to walls' / 'too walls' -> '2 walls'.\n"
+    "- 'for walls' -> '4 walls'.\n"
+    "- 'one wall' / 'won wall' -> '1 wall'.\n"
+    "- 'hamdan' / 'hamdaan' -> Operator 'Hamdan'.\n"
+    "- Always interpret these phonetic slips naturally and address the operator's actual question directly.\n"
     "\n"
     "YOUR ROLE & OBJECTIVES:\n"
     "1. You assist shop-floor operators and supervisors with full autonomy: monitoring printing, checking machine health, managing employee shifts and attendance, tracking 3D printing jobs and overtime, recording completed wall production, troubleshooting issues, and learning new knowledge.\n"
@@ -756,6 +824,8 @@ class Assistant:
         question: str,
         session_id: str = "default_terminal",
         routed: Optional[Any] = None,
+        line_id: str = "line_1",
+        operator_id: Optional[str] = None,
     ) -> Optional[str]:
         client = self._client_or_none()
         if client is None:
@@ -768,14 +838,61 @@ class Assistant:
             max_turns = 10
             self._prune_chat_history(chat, 12)
 
+            now = datetime.datetime.now()
+            today_str = now.strftime("%Y-%m-%d")
+            yesterday_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            current_time_str = now.strftime("%I:%M %p")
+
+            active = shift_store.get_active_shift_for_line(line_id)
+            if active:
+                op = shift_store.get_operator(active.get("operator_id"))
+                op_name = op.get("name") if op else active.get("operator_id")
+                shift_info = f"Shift #{active.get('shift_id')} ({active.get('shift_type')} Shift, Operator: {op_name}, Date: {active.get('shift_date')})"
+            else:
+                shift_info = f"No active shift currently running on {line_id}"
+
+            p_stat = ms.get_current_print_status()
+            progress = ms.get_print_progress()
+            is_printing = p_stat.get("printing", False)
+            print_status_str = f"Printing: {'Running' if is_printing else 'Idle'}"
+            if progress.get("available"):
+                print_status_str += f", Completed: {progress.get('completed_mm', 0)} mm / {progress.get('total_mm', 0)} mm"
+
+            rag_context = ""
             try:
-                response = chat.send_message(question)
+                rag_res = search_rag_brain(question)
+                if rag_res and rag_res.get("found") and rag_res.get("results"):
+                    top_excerpts = []
+                    for r in rag_res["results"][:3]:
+                        src = r.get("source", "knowledge_base")
+                        txt = r.get("text", "").strip()
+                        if txt:
+                            top_excerpts.append(f"[{src}]: {txt[:350]}")
+                    if top_excerpts:
+                        rag_context = "\n".join(top_excerpts)
+            except Exception as rag_err:
+                log.debug("RAG search in _ask_llm failed: %s", rag_err)
+
+            full_prompt = (
+                f"[LIVE OPERATIONAL CONTEXT]\n"
+                f"- Current Date: {today_str} ({now.strftime('%A')}), Current Time: {current_time_str}\n"
+                f"- Yesterday's Date: {yesterday_str}\n"
+                f"- Machine Line: {line_id}\n"
+                f"- Active Shift: {shift_info}\n"
+                f"- Machine Telemetry: {print_status_str}\n"
+            )
+            if rag_context:
+                full_prompt += f"\n[RETRIEVED KNOWLEDGE BASE EXCERPTS]\n{rag_context}\n"
+            full_prompt += f"\n[OPERATOR VOICE QUERY]\n{question}"
+
+            try:
+                response = chat.send_message(full_prompt)
             except Exception as exc:
                 if "503" in str(exc) or "UNAVAILABLE" in str(exc):
-                    log.warning("Primary Gemini model returned 503; falling back to gemini-3.5-flash-lite: %s", exc)
+                    log.warning("Primary Gemini model returned 503; falling back to gemini-flash-latest: %s", exc)
                     from google.genai import types
                     backup_chat = client.chats.create(
-                        model="gemini-3.5-flash-lite",
+                        model="gemini-flash-latest",
                         config=types.GenerateContentConfig(
                             system_instruction=SYSTEM_PROMPT,
                             tools=TOOLS,
@@ -788,12 +905,12 @@ class Assistant:
                     )
                     self._chats[session_id] = backup_chat
                     try:
-                        response = backup_chat.send_message(question)
+                        response = backup_chat.send_message(full_prompt)
                     except Exception as exc2:
                         if "503" in str(exc2) or "UNAVAILABLE" in str(exc2):
-                            log.warning("Backup model also returned 503; falling back to gemini-3.5-flash: %s", exc2)
+                            log.warning("Backup model also returned 503; falling back to gemini-2.5-flash: %s", exc2)
                             backup2_chat = client.chats.create(
-                                model="gemini-3.5-flash",
+                                model="gemini-2.5-flash",
                                 config=types.GenerateContentConfig(
                                     system_instruction=SYSTEM_PROMPT,
                                     tools=TOOLS,
@@ -805,7 +922,7 @@ class Assistant:
                                 ),
                             )
                             self._chats[session_id] = backup2_chat
-                            response = backup2_chat.send_message(question)
+                            response = backup2_chat.send_message(full_prompt)
                         else:
                             raise exc2
                 else:
@@ -1488,21 +1605,7 @@ class Assistant:
         if not question:
             return "I didn't catch a question."
 
-        # 0. Primary autonomous Gemini Agentic Brain
-        # When GEMINI_API_KEY is configured (self.use_llm is True), EVERY single user message
-        # MUST go directly to the Gemini Agentic Tool-Calling brain with a full 15s timeout.
-        if self.use_llm:
-            try:
-                fut = _llm_executor.submit(self._ask_llm, question, session_id=session_id)
-                llm_reply = fut.result(timeout=30.0)
-                if llm_reply:
-                    return llm_reply
-            except concurrent.futures.TimeoutError:
-                log.warning("Agentic Gemini call exceeded 30.0s timeout; falling back to offline router.")
-            except Exception as exc:
-                log.warning("Agentic Gemini call failed (%s); falling back to offline router.", exc)
-
-        # 1. Offline fallback path (used only when self.use_llm is False or Gemini timed out / failed)
+        # 0. Check for pending action confirmations or awaiting interactive states
         pending = self._actions.get(session_id, line_id)
         sess = self._session_ctx.get(session_id, line_id)
         has_awaiting_state = bool(
@@ -1511,6 +1614,29 @@ class Assistant:
             or sess.awaiting_problem_details
             or sess.awaiting_action_for_issue
         )
+
+        # 1. Primary autonomous Gemini Agentic Brain
+        # When GEMINI_API_KEY is configured (self.use_llm is True) and there is no pending confirmation,
+        # EVERY single user message flows directly through Gemini Agentic Brain with full DB/RAG tools.
+        if self.use_llm and not pending and not has_awaiting_state:
+            try:
+                fut = _llm_executor.submit(
+                    self._ask_llm,
+                    question,
+                    session_id=session_id,
+                    routed=routed,
+                    line_id=line_id,
+                    operator_id=operator_id,
+                )
+                llm_reply = fut.result(timeout=30.0)
+                if llm_reply:
+                    return llm_reply
+            except concurrent.futures.TimeoutError:
+                log.warning("Agentic Gemini call exceeded 30.0s timeout; falling back to offline router.")
+            except Exception as exc:
+                log.warning("Agentic Gemini call failed (%s); falling back to offline router.", exc)
+
+        # 2. Offline fallback path (used when self.use_llm is False or Gemini timed out / failed)
 
         # Snappy conversational reply for greetings/casual turns when offline
         if not pending and not has_awaiting_state:
@@ -2219,7 +2345,7 @@ class Assistant:
             query_router.Intent.GET_SITE_PEOPLE_COUNT,
             query_router.Intent.GET_SITE_DETECTIONS,
         }
-        if classified_intent in deterministic_factual_intents:
+        if not self.use_llm and classified_intent in deterministic_factual_intents:
             active = shift_store.get_active_shift_for_line(line_id)
             context = {
                 "session_id": session_id,
@@ -2238,7 +2364,13 @@ class Assistant:
 
         # 4. Standard queries (LLM or deterministic router)
         if self.use_llm:
-            answer = self._ask_llm(question, session_id=session_id, routed=routed)
+            answer = self._ask_llm(
+                question,
+                session_id=session_id,
+                routed=routed,
+                line_id=line_id,
+                operator_id=operator_id,
+            )
             if answer:
                 return answer
             log.info("Falling back to the local router for this question.")

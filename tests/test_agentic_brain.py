@@ -198,6 +198,106 @@ class TestAgenticBrainAndOvertime(unittest.TestCase):
         self.assertEqual(len(shifts), 1)
         self.assertEqual(shifts[0]["operator_name"], "Hamdaan")
 
+    def test_break_precondition_validation_and_double_action_prevention(self):
+        """Verify state precondition checks for breaks and double action prevention."""
+        # 1. Register employee Hamdaan (initially Off Shift, active_shift_id is None)
+        shift_store.create_or_update_employee(
+            name="Hamdaan",
+            role="Operator",
+            status="Active",
+            db_path=self.test_db,
+        )
+        op = shift_store.find_operator_by_name("Hamdaan", db_path=self.test_db)
+        self.assertEqual(op["current_work_status"], "Off Shift")
+        self.assertIsNone(op["active_shift_id"])
+
+        # 2. State Precondition Check: Trying to put an Off-Shift employee on break MUST abort
+        break_res = shift_store.update_employee_work_status(
+            operator_name="Hamdaan",
+            work_status="On Break",
+            db_path=self.test_db,
+        )
+        self.assertFalse(break_res["success"])
+        expected_error = "Cannot update status to On Break: Operator Hamdaan is currently Off Shift. Please start their shift first."
+        self.assertEqual(break_res["error"], expected_error)
+
+        # Verify DB was NOT updated
+        op_after = shift_store.find_operator_by_name("Hamdaan", db_path=self.test_db)
+        self.assertEqual(op_after["current_work_status"], "Off Shift")
+        self.assertIsNone(op_after["active_shift_id"])
+
+        # Also verify Assistant natural response in voice flow
+        bot = Assistant(use_llm=False)
+        voice_resp = bot.ask("Put Hamdaan on a lunch break")
+        self.assertIn("cannot put Hamdaan on a lunch break", voice_resp)
+        self.assertTrue("off-shift" in voice_resp.lower() or "shift has already ended" in voice_resp.lower())
+
+        # 3. Double Action Prevention: Prevent ending a shift if already Off Shift
+        end_double = shift_store.end_employee_shift("Hamdaan", db_path=self.test_db)
+        self.assertFalse(end_double["success"])
+        self.assertEqual(end_double["error"], "Cannot end shift: Operator Hamdaan is already Off Shift.")
+
+        off_double = shift_store.update_employee_work_status("Hamdaan", "Off Shift", db_path=self.test_db)
+        self.assertFalse(off_double["success"])
+        self.assertEqual(off_double["error"], "Cannot end shift: Operator Hamdaan is already Off Shift.")
+
+        # 4. Start Hamdaan's shift (status becomes Working)
+        start_res = shift_store.start_employee_shift("Hamdaan", shift_type="Morning", db_path=self.test_db)
+        self.assertTrue(start_res["success"])
+        op_working = shift_store.find_operator_by_name("Hamdaan", db_path=self.test_db)
+        self.assertEqual(op_working["current_work_status"], "Working")
+        self.assertIsNotNone(op_working["active_shift_id"])
+
+        # 5. Double Action Prevention / Idempotent Clock-In: Prevent starting a shift if already Working
+        start_double = shift_store.start_employee_shift("Hamdaan", shift_type="Morning", db_path=self.test_db)
+        self.assertFalse(start_double["success"])
+        self.assertEqual(start_double["error"], "Operator Hamdaan is already clocked into an active shift.")
+
+        # 6. Put Hamdaan on Break while Working succeeds
+        break_valid = shift_store.update_employee_work_status("Hamdaan", "On Break", db_path=self.test_db)
+        self.assertTrue(break_valid["success"])
+        self.assertEqual(break_valid["current_work_status"], "On Break")
+
+        # Double Break check
+        break_again = shift_store.update_employee_work_status("Hamdaan", "On Break", db_path=self.test_db)
+        self.assertFalse(break_again["success"])
+        self.assertEqual(break_again["error"], "Operator Hamdaan is already On Break.")
+
+        # Starting shift while on break fails
+        start_on_break = shift_store.start_employee_shift("Hamdaan", db_path=self.test_db)
+        self.assertFalse(start_on_break["success"])
+        self.assertIn("On Break", start_on_break["error"])
+
+        # 7. Resume Working
+        resume_res = shift_store.update_employee_work_status("Hamdaan", "Working", db_path=self.test_db)
+        self.assertTrue(resume_res["success"])
+        self.assertEqual(resume_res["current_work_status"], "Working")
+
+        # 8. End shift properly
+        end_ok = shift_store.end_employee_shift("Hamdaan", db_path=self.test_db)
+        self.assertTrue(end_ok["success"])
+        self.assertEqual(end_ok["status"], "Completed")
+
+        # After ending shift, employee is Off Shift again; putting on break fails again
+        break_after_end = shift_store.update_employee_work_status("Hamdaan", "On Break", db_path=self.test_db)
+        self.assertFalse(break_after_end["success"])
+        self.assertEqual(break_after_end["error"], expected_error)
+
+    def test_gemini_natural_reply_on_break_validation_failure(self):
+        """Verify Assistant with LLM returns natural speech when break validation fails."""
+        from unittest.mock import MagicMock, patch
+        bot = Assistant(use_llm=True)
+        mock_chat = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.text = "I cannot put Hamdaan on a lunch break because his shift has already ended / he is off-shift."
+        mock_chat.send_message.return_value = mock_resp
+        bot._chats["test_session"] = mock_chat
+        mock_client = MagicMock()
+        with patch.object(bot, "_client_or_none", return_value=mock_client):
+            ans = bot.ask("Put Hamdaan on a lunch break", session_id="test_session")
+            self.assertIn("cannot put Hamdaan on a lunch break", ans)
+            self.assertIn("off-shift", ans.lower())
+
     def test_printing_jobs_and_overtime_tools(self):
         """Verify start_or_update_printing_job and query_printing_jobs_and_overtime."""
         # Create an employee and shift first
@@ -321,9 +421,12 @@ class TestAgenticBrainAndOvertime(unittest.TestCase):
         self.assertIn("execute_sql_write", tool_names)
         self.assertIn("search_rag_brain", tool_names)
         self.assertIn("learn_and_store_in_rag_brain", tool_names)
+        self.assertIn("update_employee_work_status", tool_names)
+        self.assertIn("get_active_shifts", tool_names)
+        self.assertIn("get_operators_status", tool_names)
         self.assertNotIn("get_site_people_count", tool_names)
         self.assertNotIn("get_site_detections", tool_names)
-        self.assertEqual(len(TOOLS), 21)
+        self.assertEqual(len(TOOLS), 24)
 
         bot = Assistant(use_llm=False)
         self.assertFalse(bot.use_llm)
@@ -332,6 +435,152 @@ class TestAgenticBrainAndOvertime(unittest.TestCase):
         ans = bot.ask("what is the machine status")
         self.assertIsInstance(ans, str)
         self.assertTrue(len(ans) > 0)
+
+    # -------------------------------------------------------------------------
+    # 7. Enterprise Safety Guardrails & Validation
+    # -------------------------------------------------------------------------
+    def test_idempotent_clock_in_prevents_duplicate_shifts(self):
+        """Verify starting an active shift twice returns an idempotent error and creates zero duplicate rows."""
+        shift_store.create_or_update_employee("Hamdaan", role="Operator", status="Active", db_path=self.test_db)
+        first_start = shift_store.start_employee_shift("Hamdaan", shift_type="Morning", db_path=self.test_db)
+        self.assertTrue(first_start["success"])
+        shift_id = first_start["shift_id"]
+
+        # Attempt duplicate clock-in
+        second_start = shift_store.start_employee_shift("Hamdaan", shift_type="Morning", db_path=self.test_db)
+        self.assertFalse(second_start["success"])
+        expected_err = "Operator Hamdaan is already clocked into an active shift."
+        self.assertEqual(second_start["error"], expected_err)
+
+        # Verify only 1 shift row exists in database
+        with db.connect(self.test_db) as conn:
+            rows = conn.execute("SELECT * FROM shifts WHERE operator_name = 'Hamdaan'").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["shift_id"], shift_id)
+
+    def test_ghost_shift_auto_closure_16_hour_rule(self):
+        """Verify forgotten shifts exceeding 16 hours are automatically closed with 9.0h and auto-closure note."""
+        shift_store.create_or_update_employee("Lukhmaan", role="Operator", status="Active", db_path=self.test_db)
+
+        # Start shift 18 hours ago
+        start_time_dt = datetime.datetime.now() - datetime.timedelta(hours=18.0)
+        start_time_str = start_time_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        res = shift_store.start_employee_shift(
+            "Lukhmaan",
+            shift_type="Morning",
+            actual_start_time=start_time_str,
+            line_id="line_1",
+            db_path=self.test_db,
+        )
+        self.assertTrue(res["success"])
+        s_id = res["shift_id"]
+
+        # Verify active shift retrieval automatically sweeps and closes the 18-hour old shift
+        active_shift = shift_store.get_active_shift_for_line("line_1", db_path=self.test_db)
+        self.assertIsNone(active_shift)
+
+        # Check closed shift properties in shifts table
+        closed_shift = shift_store.get_shift(s_id, db_path=self.test_db)
+        self.assertEqual(closed_shift["status"], "Completed")
+        self.assertEqual(closed_shift["current_status"], "Completed")
+        self.assertEqual(closed_shift["total_hours"], 9.0)
+        self.assertEqual(closed_shift["regular_hours"], 9.0)
+        self.assertEqual(closed_shift["overtime_hours"], 0.0)
+        self.assertEqual(closed_shift["overtime_status"], "Normal")
+        self.assertIn("Auto-closed due to forgotten clock-out", closed_shift["summary_notes"])
+
+        # Check operator state in operators table
+        op = shift_store.find_operator_by_name("Lukhmaan", db_path=self.test_db)
+        self.assertEqual(op["current_work_status"], "Off Shift")
+        self.assertIsNone(op["active_shift_id"])
+
+    def test_ambiguous_name_collision_resolution(self):
+        """Verify spoken name query matching multiple active operators halts mutation and returns clarification."""
+        shift_store.create_or_update_employee("Aman", role="Operator", status="Active", db_path=self.test_db)
+        shift_store.create_or_update_employee("Anand Sharma", role="Operator", status="Active", db_path=self.test_db)
+
+        # Ambiguous name query on shift start
+        amb_start = shift_store.start_employee_shift("Aman", db_path=self.test_db)
+        self.assertFalse(amb_start["success"])
+        self.assertTrue(amb_start.get("clarification_needed"))
+        self.assertEqual(sorted(amb_start.get("matches", [])), ["Aman", "Anand Sharma"])
+        self.assertEqual(
+            amb_start.get("message"),
+            "I found multiple operators matching that name. Did you mean Aman or Anand Sharma?",
+        )
+
+        # Verify zero shifts were created for either operator
+        with db.connect(self.test_db) as conn:
+            rows = conn.execute("SELECT * FROM shifts").fetchall()
+            self.assertEqual(len(rows), 0)
+
+        # Ambiguous name on work status update
+        amb_status = shift_store.update_employee_work_status("Aman", "On Break", db_path=self.test_db)
+        self.assertFalse(amb_status["success"])
+        self.assertTrue(amb_status.get("clarification_needed"))
+        self.assertEqual(
+            amb_status.get("message"),
+            "I found multiple operators matching that name. Did you mean Aman or Anand Sharma?",
+        )
+
+        # Ambiguous name on shift end
+        amb_end = shift_store.end_employee_shift("Aman", db_path=self.test_db)
+        self.assertFalse(amb_end["success"])
+        self.assertTrue(amb_end.get("clarification_needed"))
+        self.assertEqual(
+            amb_end.get("message"),
+            "I found multiple operators matching that name. Did you mean Aman or Anand Sharma?",
+        )
+
+        # Ambiguous name on logging hours
+        amb_hours = shift_store.log_operator_hours("Aman", 8.0, db_path=self.test_db)
+        self.assertFalse(amb_hours["success"])
+        self.assertTrue(amb_hours.get("clarification_needed"))
+        self.assertEqual(
+            amb_hours.get("message"),
+            "I found multiple operators matching that name. Did you mean Aman or Anand Sharma?",
+        )
+
+    def test_live_operator_status_queries_and_phonetic_matching(self):
+        """Verify queries for working operators query live database and support phonetic matching for Lokmanya."""
+        bot = Assistant(use_llm=False)
+
+        # 1. When no shifts are active
+        ans_who = bot.ask("who is working right now")
+        self.assertEqual(ans_who, "No operators are currently clocked in on an active shift right now.")
+        self.assertNotIn(".env", ans_who)
+        self.assertNotIn("OPERATOR_NAME", ans_who)
+
+        ans_who_alt = bot.ask("who's working right now")
+        self.assertEqual(ans_who_alt, "No operators are currently clocked in on an active shift right now.")
+
+        ans_lokmanya_off = bot.ask("is Lokmanya working right now")
+        self.assertIn("Lukhmaan is not working right now", ans_lokmanya_off)
+        self.assertIn("Off Shift", ans_lokmanya_off)
+        self.assertNotIn(".env", ans_lokmanya_off)
+
+        # 2. Clock in Lukhmaan
+        start_res = shift_store.start_employee_shift("Lukhmaan", shift_type="Morning", db_path=self.test_db)
+        self.assertTrue(start_res["success"])
+
+        # Query again with phonetic alias 'Lokmanya'
+        ans_lokmanya_on = bot.ask("is Lokmanya working right now")
+        self.assertIn("Yes, Lukhmaan is currently clocked in and working on shift.", ans_lokmanya_on)
+
+        # Query who is working now
+        ans_who_on = bot.ask("who is working right now")
+        self.assertIn("Lukhmaan is the operator currently working on shift.", ans_who_on)
+
+        # Direct tool verification
+        active_shifts = shift_store.get_active_shifts(db_path=self.test_db)
+        self.assertEqual(len(active_shifts), 1)
+        self.assertEqual(active_shifts[0]["operator_name"], "Lukhmaan")
+
+        st_alias = shift_store.get_operators_status("Lokmanya", db_path=self.test_db)
+        self.assertTrue(st_alias["found"])
+        self.assertEqual(st_alias["operator_name"], "Lukhmaan")
+        self.assertTrue(st_alias["is_working"])
 
 
 if __name__ == "__main__":

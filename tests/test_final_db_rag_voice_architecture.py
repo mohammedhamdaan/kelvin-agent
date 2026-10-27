@@ -70,9 +70,10 @@ class TestSafeBackupAndNormalizedSchema(unittest.TestCase):
             "shifts",
             "machines",
             "printing_jobs",
+            "production_records",
             "shift_issues",
-            "machine_telemetry",
-            "safety_events",
+            "handovers",
+            "event_corrections",
         }
         with db.connect(self.db_path) as conn:
             rows = conn.execute(

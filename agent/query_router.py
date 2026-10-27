@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent import config, db, metrics, shift_store
+from agent import config, db, identity, metrics, shift_store
 from agent.logging_setup import get_logger
 from agent.rag.embeddings import _STOPWORDS, tokenize
 from agent.rag.retriever import search_documentation
@@ -450,6 +450,10 @@ _PATTERNS: List[Tuple[Intent, List[str], int]] = [
         "kaun printing", "kaun print", "kaun chala", "kaun operate", "kaun kar raha",
         "operator kaun", "kaun sa operator", "who is printing", "who is operating",
         "who is running", "current operator", "operator name", "operator kon",
+        "who is working right now", "who's working right now", "who is working", "who's working",
+        "who is on shift right now", "who is on shift", "who is on duty", "is anyone working",
+        "is lokmanya working", "is lokmanya working right now", "is lukhmaan working",
+        "is hamdaan working", "is farish working",
     ], 5),
     (Intent.GET_CURRENT_LAYER, [
         "current layer", "which layer", "what layer", "layer number", "kaunsa layer",
@@ -1690,8 +1694,8 @@ def resolve(intent: Intent, question: str, context: Optional[Dict[str, Any]] = N
             facts["produced_note"] = entry.get("reason", "")
         if events:
             facts["events"] = [
-                {"type": e["event_type"], "message": e["message"],
-                 "seconds_ago": round(__import__("time").time() - e["timestamp"], 1)}
+                {"type": e.get("event_type", ""), "message": e.get("message") or e.get("description", ""),
+                 "seconds_ago": round(__import__("time").time() - e.get("timestamp", 0), 1)}
                 for e in events
             ]
         return RouterResult(intent, facts=facts)
@@ -1701,21 +1705,45 @@ def resolve(intent: Intent, question: str, context: Optional[Dict[str, Any]] = N
 
     # --- operator ---
     if intent == Intent.GET_OPERATOR:
-        # The operator is a shop-floor fact, not a measurement: no camera or
-        # sensor can identify a person. It comes from OPERATOR_NAME in .env,
-        # and when that is not set the honest answer is that it is not recorded
-        # -- never a guessed name.
-        from agent import config as _config
+        # Queries live database (operators and shifts) for currently working operators
+        cand_name = identity.extract_name_candidate(question)
+        if cand_name and cand_name.lower() not in {"who", "anyone", "someone", "somebody", "anybody", "everybody", "everyone"}:
+            st_spec = shift_store.get_operators_status(cand_name)
+            if st_spec.get("found"):
+                actual_name = st_spec.get("operator_name", cand_name)
+                is_working = st_spec.get("is_working", False)
+                curr_status = st_spec.get("current_work_status", "Off Shift")
+                return RouterResult(
+                    intent,
+                    facts={
+                        "specific_query": True,
+                        "operator_name": actual_name,
+                        "is_working": is_working,
+                        "current_work_status": curr_status,
+                        "message": st_spec.get("message"),
+                        "source": "live_shifts_database",
+                    },
+                )
 
-        name = (_config.OPERATOR_NAME or "").strip()
-        if not name:
+        st_all = shift_store.get_operators_status()
+        if st_all.get("has_active_workers"):
+            working_list = st_all.get("working_operators", [])
+            op_str = ", ".join(working_list)
             return RouterResult(
-                intent, available=False,
-                reason=("The current operator is not recorded. No operator name is "
-                        "configured, and the machine has no way to identify who is "
-                        "running it. Set OPERATOR_NAME in the .env file."),
+                intent,
+                facts={
+                    "operator": op_str,
+                    "active": True,
+                    "working_operators": working_list,
+                    "source": "live_shifts_database",
+                },
             )
-        return RouterResult(intent, facts={"operator": name, "source": "configured"})
+        return RouterResult(
+            intent,
+            available=True,
+            facts={"operator": None, "active": False, "working_operators": []},
+            reason="No operators are currently clocked in on an active shift right now.",
+        )
 
     # --- status ---
     if intent == Intent.GET_MACHINE_STATUS:
@@ -1793,7 +1821,7 @@ def resolve(intent: Intent, question: str, context: Optional[Dict[str, Any]] = N
             return RouterResult(intent, facts={"problems": [], "message": "No problems have been recorded."})
         return RouterResult(intent, facts={
             "alerts": alerts,
-            "events": [{"type": e["event_type"], "message": e["message"]} for e in events],
+            "events": [{"type": e.get("event_type", ""), "message": e.get("message") or e.get("description", "")} for e in events],
         })
 
     # --- knowledge ---
@@ -2474,9 +2502,11 @@ def resolve(intent: Intent, question: str, context: Optional[Dict[str, Any]] = N
 
     if intent == Intent.OPERATIONAL_REPORT:
         q_low = question.lower()
-        shift_store.seed_reference_operational_data(config.DATABASE_PATH)
         report = shift_store.get_agent_reporting_view(shift_date="2026-10-08", db_path=config.DATABASE_PATH)
         if not report:
+            op_id_extracted = extract_operator_from_text(question)
+            if op_id_extracted:
+                return resolve(Intent.GET_SHIFT_BY_OPERATOR, question, context=context)
             return RouterResult(intent, available=False, reason="Operational reporting data is not available.")
 
         is_arrival = any(w in q_low for w in ("arrive", "came in", "come in", "clock in"))
@@ -2808,7 +2838,16 @@ def summarise(result: RouterResult) -> str:
     if i == Intent.WAKE_WORD:
         return "Yes, what would you like to know?"
     if i == Intent.GET_OPERATOR:
-        return f"{f['operator']} is the operator on record for this machine."
+        if f.get("specific_query"):
+            op_name = f.get("operator_name")
+            if f.get("is_working"):
+                return f"Yes, {op_name} is currently clocked in and working on shift."
+            else:
+                status = f.get("current_work_status", "Off Shift")
+                return f"No, {op_name} is not working right now. Their current status is {status}."
+        if f.get("operator"):
+            return f"{f['operator']} is the operator currently working on shift."
+        return "No operators are currently clocked in on an active shift right now."
     if i == Intent.GET_MACHINE_STATUS:
         note = f" {f['note']}" if f.get("note") else ""
         return ("Yes, printing is currently running." if f.get("printing")

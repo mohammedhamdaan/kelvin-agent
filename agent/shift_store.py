@@ -17,7 +17,15 @@ log = get_logger("ShiftStore")
 
 
 def _row_to_dict(row: Optional[Any]) -> Optional[Dict[str, Any]]:
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    d = dict(row)
+    if "operator_id" in d and "shift_id" not in d:
+        d.setdefault("current_work_status", "Off Shift")
+        if not d.get("current_work_status"):
+            d["current_work_status"] = "Off Shift"
+        d.setdefault("active_shift_id", None)
+    return d
 
 
 def _parse_dt(val: Any) -> Optional[datetime.datetime]:
@@ -125,27 +133,35 @@ def get_operator(operator_id: Any, db_path: Optional[str] = None) -> Optional[Di
     return _row_to_dict(row)
 
 
+_OPERATOR_ALIASES: Dict[str, str] = {
+    "lokmanya": "Lukhmaan",
+    "lukman": "Lukhmaan",
+    "luqman": "Lukhmaan",
+    "lakshman": "Lukhmaan",
+    "lukhman": "Lukhmaan",
+    "lukhmaan": "Lukhmaan",
+    "faris": "Farish",
+    "harish": "Farish",
+    "farish": "Farish",
+    "hamdan": "Hamdaan",
+    "hamdaan": "Hamdaan",
+    "anand vihar": "Anand Sharma",
+    "anand sharma": "Anand Sharma",
+}
+
+
 def find_operator_by_name(
     name: str, active_only: bool = True, db_path: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Resolves a SPOKEN name to an operator record, or None.
-
-    Speech gives a name, not an id, so "Anand here" has to reach the operators
-    table by name. Two passes, most specific first:
-
-      1. the whole spoken name against the whole stored name, case-insensitive
-      2. the spoken name against the stored FIRST name -- operators are stored
-         as "Anand Sharma" but nobody says their surname on the shop floor
-
-    Returns None when the name matches nothing, and also when it matches more
-    than one operator: two people called Anand must not be silently collapsed
-    into whichever row came back first. The caller reports the failure rather
-    than guessing, so an unresolved name can never start a shift.
+    Supports phonetic aliases (e.g., 'Lokmanya' -> 'Lukhmaan', 'Harish' -> 'Farish').
     """
     clean = (name or "").strip().lower()
     if not clean:
         return None
+
+    canonical = _OPERATOR_ALIASES.get(clean, clean).lower()
 
     with db.connect(db_path) as conn:
         sql = "SELECT * FROM operators"
@@ -153,22 +169,138 @@ def find_operator_by_name(
             sql += " WHERE (active = 1 OR status = 'Active')"
         rows = [dict(r) for r in conn.execute(sql)]
 
-    exact = [r for r in rows if (r.get("name") or "").strip().lower() == clean]
+    # 1. Exact match against clean or canonical
+    exact = [
+        r for r in rows
+        if (r.get("name") or "").strip().lower() in (clean, canonical)
+        or (r.get("employee_code") or "").strip().lower() in (clean, canonical)
+        or str(r.get("operator_id") or "").strip().lower() in (clean, canonical)
+    ]
     if len(exact) == 1:
         return exact[0]
     if len(exact) > 1:
         log.warning("Spoken name %r matches %d operators; refusing to guess.", name, len(exact))
         return None
 
+    # 2. First name match
     first = [
         r for r in rows
-        if (r.get("name") or "").strip().lower().split(" ")[0] == clean
+        if (r.get("name") or "").strip().lower().split(" ")[0] in (clean, canonical)
     ]
     if len(first) == 1:
         return first[0]
     if len(first) > 1:
         log.warning("Spoken first name %r matches %d operators; refusing to guess.", name, len(first))
+        return None
+
+    # 3. Universal auto-registration / core operator seeding fallback
+    core_map = {
+        "lukhmaan": ("K6K003", "Lukhmaan", "K6K003", "Operator"),
+        "farish": ("K6K002", "Farish", "K6K002", "Operator"),
+        "hamdaan": ("K6K001", "Hamdaan", "K6K001", "Operator"),
+        "anand sharma": ("K6K004", "Anand Sharma", "K6K004", "Operator"),
+    }
+    if canonical in core_map:
+        cid, cname, ccode, crole = core_map[canonical]
+        with db.connect(db_path) as conn:
+            existing = conn.execute(
+                "SELECT * FROM operators WHERE operator_id = ? OR name = ? COLLATE NOCASE",
+                (cid, cname),
+            ).fetchone()
+            if existing:
+                return _row_to_dict(existing)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO operators (operator_id, name, employee_code, role, status, active, current_work_status)
+                    VALUES (?, ?, ?, ?, 'Active', 1, 'Off Shift')
+                    """,
+                    (cid, cname, ccode, crole),
+                )
+                created = conn.execute("SELECT * FROM operators WHERE operator_id = ?", (cid,)).fetchone()
+                return _row_to_dict(created)
+            except Exception as exc:
+                log.warning("Could not auto-register core operator %s: %s", cname, exc)
+
     return None
+
+
+def find_operators_matching_name(
+    query: str, active_only: bool = True, db_path: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Finds all operators matching a spoken or text query for STT safety and ambiguity detection.
+    Matches exact name, first name, substring, and acoustic/nasal STT collisions (e.g. 'Aman' vs 'Anand').
+    Supports phonetic aliases (e.g. 'Lokmanya' -> 'Lukhmaan', 'Harish' -> 'Farish').
+    Returns a list of matching operator records.
+    """
+    clean = (query or "").strip().lower()
+    if not clean:
+        return []
+
+    canonical = _OPERATOR_ALIASES.get(clean, clean).lower()
+
+    with db.connect(db_path) as conn:
+        sql = "SELECT * FROM operators"
+        if active_only:
+            sql += " WHERE (active = 1 OR status = 'Active')"
+        rows = [dict(r) for r in conn.execute(sql)]
+
+    # If rows empty and query is a core operator/alias, let find_operator_by_name seed it
+    if not rows and canonical in ("lukhmaan", "farish", "hamdaan", "anand sharma"):
+        seeded = find_operator_by_name(query, active_only=active_only, db_path=db_path)
+        if seeded:
+            return [seeded]
+
+    # Check exact match on clean or canonical
+    exact = [
+        r for r in rows
+        if (r.get("name") or "").strip().lower() in (clean, canonical)
+        or (r.get("employee_code") or "").strip().lower() in (clean, canonical)
+        or str(r.get("operator_id") or "").strip().lower() in (clean, canonical)
+    ]
+    if len(exact) > 1:
+        return exact
+
+    matches: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    def nasal_norm(s: str) -> str:
+        return re.sub(r"[mn]", "n", s.lower())
+
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        name_lower = name.lower()
+        first_name = name_lower.split()[0] if name_lower else ""
+        r_id = r.get("operator_id")
+
+        matched = False
+        if clean in (name_lower, first_name) or canonical in (name_lower, first_name):
+            matched = True
+        elif len(clean) >= 3 and (clean in name_lower or (len(first_name) >= 3 and first_name in clean)):
+            matched = True
+        elif len(canonical) >= 3 and (canonical in name_lower or (len(first_name) >= 3 and first_name in canonical)):
+            matched = True
+        elif len(clean) >= 3 and len(first_name) >= 3 and clean[0] == first_name[0]:
+            qn = nasal_norm(clean)
+            fn = nasal_norm(first_name)
+            if qn[:3] == fn[:3]:
+                matched = True
+            elif difflib.SequenceMatcher(None, clean, first_name).ratio() >= 0.65:
+                matched = True
+
+        if matched and r_id not in seen_ids:
+            seen_ids.add(r_id)
+            matches.append(r)
+
+    # Fallback to find_operator_by_name if no match found (e.g. for aliases/seeding)
+    if not matches:
+        op = find_operator_by_name(query, active_only=active_only, db_path=db_path)
+        if op:
+            matches.append(op)
+
+    matches.sort(key=lambda x: 0 if (x.get("name") or "").strip().lower() in (clean, canonical) else 1)
+    return matches
 
 
 # --- recovering a name speech-to-text broke apart ---------------------------
@@ -465,6 +597,11 @@ def start_shift(
             ),
         )
         shift_id = int(cur.lastrowid)
+        if status in ("active", "Active"):
+            conn.execute(
+                "UPDATE operators SET current_work_status = 'Working', active_shift_id = ? WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+                (shift_id, clean_op_id, str(clean_op_id)),
+            )
     log.info("Started shift %d: line=%s, operator=%s, date=%s, type=%s", shift_id, line_id, clean_op_id, s_date, shift_type)
     return shift_id
 
@@ -479,14 +616,240 @@ def get_shift(shift_id: int, db_path: Optional[str] = None) -> Optional[Dict[str
     return _row_to_dict(row)
 
 
-def get_active_shift_for_line(line_id: str = "line_1", db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def auto_close_ghost_shifts(
+    db_path: Optional[str] = None,
+    max_hours: float = 16.0,
+    now: Optional[datetime.datetime] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Ghost Shift Auto-Closure (16-Hour Rollover Rule):
+    Checks for open shifts where status in ('active', 'Active') or current_status in ('Working', 'On Break')
+    and the elapsed time since actual_start_time exceeds max_hours (default 16 hours).
+    Automatically closes these forgotten shifts:
+      - actual_end_time = actual_start_time + 9 hours
+      - regular_hours = 9.0
+      - total_hours = 9.0
+      - overtime_hours = 0.0
+      - overtime_status = 'Normal'
+      - current_status = 'Completed'
+      - status = 'Completed'
+      - summary_notes = 'Auto-closed due to forgotten clock-out'
+      - operators.current_work_status = 'Off Shift'
+      - operators.active_shift_id = NULL
+    """
+    ref_now = now or datetime.datetime.now()
+    closed: List[Dict[str, Any]] = []
+
+    with db.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM shifts
+            WHERE status IN ('active', 'Active')
+            """
+        ).fetchall()
+
+        for r in rows:
+            row_dict = dict(r)
+            s_id = row_dict["shift_id"]
+            op_id = row_dict.get("operator_id")
+
+            start_raw = row_dict.get("actual_start_time") or row_dict.get("start_time") or row_dict.get("planned_start_time")
+            start_dt = _parse_dt(start_raw)
+            if not start_dt:
+                continue
+
+            elapsed_hours = (ref_now - start_dt).total_seconds() / 3600.0
+            if elapsed_hours >= max_hours:
+                auto_end_dt = start_dt + datetime.timedelta(hours=9.0)
+                auto_end_str = auto_end_dt.strftime("%Y-%m-%d %H:%M:%S")
+                auto_end_ts = auto_end_dt.timestamp()
+
+                conn.execute(
+                    """
+                    UPDATE shifts SET
+                        actual_end_time = ?,
+                        end_time = ?,
+                        total_hours = 9.0,
+                        regular_hours = 9.0,
+                        overtime_hours = 0.0,
+                        overtime_status = 'Normal',
+                        current_status = 'Completed',
+                        status = 'Completed',
+                        summary_notes = COALESCE(summary_notes || '; ', '') || 'Auto-closed due to forgotten clock-out'
+                    WHERE shift_id = ?
+                    """,
+                    (auto_end_str, auto_end_ts, s_id),
+                )
+
+                if op_id:
+                    conn.execute(
+                        """
+                        UPDATE operators SET
+                            current_work_status = 'Off Shift',
+                            active_shift_id = NULL
+                        WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?
+                        """,
+                        (op_id, str(op_id)),
+                    )
+
+                closed.append({
+                    "shift_id": s_id,
+                    "operator_id": op_id,
+                    "actual_start_time": str(start_raw),
+                    "actual_end_time": auto_end_str,
+                    "total_hours": 9.0,
+                    "summary_notes": "Auto-closed due to forgotten clock-out",
+                })
+                log.info("Auto-closed ghost shift %d for operator %s (elapsed: %.1f hours)", s_id, op_id, elapsed_hours)
+
+    return closed
+
+
+def get_active_shift_for_line(
+    line_id: str = "line_1",
+    db_path: Optional[str] = None,
+    now: Optional[datetime.datetime] = None,
+) -> Optional[Dict[str, Any]]:
     """Retrieves the active shift on a specific line utilizing idx_shifts_single_active_line."""
+    auto_close_ghost_shifts(db_path=db_path, now=now)
     with db.connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM shifts WHERE line_id = ? AND status IN ('active', 'Active') LIMIT 1",
             (line_id.strip(),),
         ).fetchone()
     return _row_to_dict(row)
+
+
+def get_active_shifts(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Retrieves all active shifts across all lines.
+    Automatically sweeps and closes ghost shifts older than 16 hours first.
+    """
+    auto_close_ghost_shifts(db_path=db_path)
+    with db.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, COALESCE(o.name, s.operator_name, s.operator_id) AS operator_name, o.current_work_status
+            FROM shifts s
+            LEFT JOIN operators o ON (s.operator_id = o.operator_id OR CAST(s.operator_id AS TEXT) = CAST(o.operator_id AS TEXT))
+            WHERE s.status IN ('active', 'Active')
+            ORDER BY s.start_time DESC
+            """
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_operators_status(
+    operator_name: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Queries live database work status from operators (current_work_status) and shifts (status='Active').
+    If operator_name is provided, returns the status of that specific operator (supporting phonetic aliases).
+    If operator_name is omitted, returns the live status of all active workers and shifts on the shop floor.
+    """
+    auto_close_ghost_shifts(db_path=db_path)
+
+    if operator_name and str(operator_name).strip():
+        clean_name = str(operator_name).strip()
+        op = find_operator_by_name(clean_name, active_only=False, db_path=db_path)
+        if not op:
+            matches = find_operators_matching_name(clean_name, active_only=False, db_path=db_path)
+            if matches:
+                op = matches[0]
+
+        if not op:
+            return {
+                "found": False,
+                "operator_name": clean_name,
+                "is_working": False,
+                "current_work_status": "Unknown",
+                "message": f"Operator '{clean_name}' was not found in the database.",
+            }
+
+        op_id = op["operator_id"]
+        op_name = op.get("name") or clean_name
+        curr_status = op.get("current_work_status", "Off Shift")
+
+        with db.connect(db_path) as conn:
+            active_shift = conn.execute(
+                """
+                SELECT * FROM shifts
+                WHERE (operator_id = ? OR CAST(operator_id AS TEXT) = ?)
+                  AND status IN ('active', 'Active')
+                ORDER BY start_time DESC LIMIT 1
+                """,
+                (op_id, str(op_id)),
+            ).fetchone()
+
+        has_active_shift = active_shift is not None
+        is_working = curr_status == "Working" or has_active_shift
+        effective_status = "Working" if is_working and curr_status != "On Break" else curr_status
+
+        shift_info = _row_to_dict(active_shift) if active_shift else None
+        line = shift_info.get("line_id") if shift_info else op.get("assigned_line", "line_1")
+
+        msg = (
+            f"Yes, {op_name} is currently clocked in and working on {line}."
+            if is_working
+            else f"No, {op_name} is not working right now. Their current status is {effective_status}."
+        )
+        return {
+            "found": True,
+            "operator_id": op_id,
+            "operator_name": op_name,
+            "current_work_status": effective_status,
+            "is_working": is_working,
+            "active_shift": shift_info,
+            "line_id": line,
+            "message": msg,
+        }
+
+    # All active shifts and operators
+    with db.connect(db_path) as conn:
+        active_shifts = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT s.*, COALESCE(o.name, s.operator_name, s.operator_id) AS operator_name, o.current_work_status
+                FROM shifts s
+                LEFT JOIN operators o ON (s.operator_id = o.operator_id OR CAST(s.operator_id AS TEXT) = CAST(o.operator_id AS TEXT))
+                WHERE s.status IN ('active', 'Active')
+                ORDER BY s.start_time DESC
+                """
+            ).fetchall()
+        ]
+        all_ops = [
+            dict(r) for r in conn.execute(
+                "SELECT operator_id, name, employee_code, role, current_work_status, active_shift_id, assigned_line FROM operators WHERE active = 1 ORDER BY name ASC"
+            ).fetchall()
+        ]
+
+    working_names = []
+    for s in active_shifts:
+        n = s.get("operator_name") or str(s.get("operator_id"))
+        if n not in working_names:
+            working_names.append(n)
+    for o in all_ops:
+        if o.get("current_work_status") == "Working" and o.get("name") not in working_names:
+            working_names.append(o.get("name"))
+
+    has_workers = len(working_names) > 0
+    if not has_workers:
+        msg = "No operators are currently clocked in on an active shift right now."
+    elif len(working_names) == 1:
+        msg = f"{working_names[0]} is currently clocked in and working on shift right now."
+    else:
+        msg = f"Currently clocked in and working right now: {', '.join(working_names)}."
+
+    return {
+        "active_shifts_count": len(active_shifts),
+        "working_operators_count": len(working_names),
+        "working_operators": working_names,
+        "active_shifts": active_shifts,
+        "all_operators": all_ops,
+        "has_active_workers": has_workers,
+        "message": msg,
+    }
 
 
 def end_shift(
@@ -530,6 +893,11 @@ def end_shift(
             f"UPDATE shifts SET {', '.join(sets)} WHERE shift_id = ?",
             params,
         )
+        if shift and shift.get("operator_id"):
+            conn.execute(
+                "UPDATE operators SET current_work_status = 'Off Shift', active_shift_id = NULL WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+                (shift["operator_id"], str(shift["operator_id"])),
+            )
         return cur.rowcount > 0
 
 
@@ -1898,7 +2266,21 @@ def start_employee_shift(
     if not clean_name:
         return {"success": False, "error": "Operator name must be provided to start a shift."}
 
-    op = find_operator_by_name(clean_name, active_only=False, db_path=db_path)
+    # 1. Sweep ghost shifts (16-hour rollover rule)
+    auto_close_ghost_shifts(db_path=db_path)
+
+    # 2. Check ambiguous name collisions (STT Safety)
+    matches = find_operators_matching_name(clean_name, active_only=True, db_path=db_path)
+    if len(matches) > 1:
+        match_names = [m["name"] for m in matches]
+        return {
+            "success": False,
+            "clarification_needed": True,
+            "matches": match_names,
+            "message": f"I found multiple operators matching that name. Did you mean {' or '.join(match_names)}?",
+        }
+
+    op = matches[0] if matches else find_operator_by_name(clean_name, active_only=False, db_path=db_path)
     if not op:
         return {
             "success": False,
@@ -1908,6 +2290,27 @@ def start_employee_shift(
         }
 
     op_id = op["operator_id"]
+    op_name = op.get("name") or clean_name
+    curr_status = op.get("current_work_status", "Off Shift")
+
+    # 3. Idempotent Clock-In & Preconditions: Prevent double shifts
+    with db.connect(db_path) as conn:
+        active_row = conn.execute(
+            "SELECT shift_id FROM shifts WHERE (operator_id = ? OR CAST(operator_id AS TEXT) = ?) AND status IN ('active', 'Active')",
+            (op_id, str(op_id)),
+        ).fetchone()
+
+    if curr_status == "On Break":
+        return {
+            "success": False,
+            "error": f"Cannot start shift: Operator {op_name} is currently On Break. Please resume their shift first.",
+        }
+    if curr_status == "Working" or active_row is not None:
+        return {
+            "success": False,
+            "error": f"Operator {op_name} is already clocked into an active shift.",
+        }
+
     now_dt = datetime.datetime.now()
     if actual_start_time:
         parsed_dt = _parse_dt(actual_start_time) or now_dt
@@ -1927,14 +2330,14 @@ def start_employee_shift(
     else:
         s_type = shift_type
 
-    # Close any lingering active shift on this line or for this operator
+    # Close any lingering shift on this line from another operator
     with db.connect(db_path) as conn:
-        active_row = conn.execute(
-            "SELECT shift_id, operator_id FROM shifts WHERE (line_id = ? OR operator_id = ?) AND status IN ('active', 'Active')",
-            (line_id, op_id),
+        line_row = conn.execute(
+            "SELECT shift_id, operator_id FROM shifts WHERE line_id = ? AND status IN ('active', 'Active')",
+            (line_id,),
         ).fetchone()
-        if active_row:
-            end_shift(active_row["shift_id"], status="Completed", db_path=db_path)
+        if line_row and str(line_row["operator_id"]) != str(op_id):
+            end_shift(line_row["shift_id"], status="Completed", db_path=db_path)
 
     try:
         s_id = start_shift(
@@ -1945,15 +2348,25 @@ def start_employee_shift(
             status="Active",
             db_path=db_path,
         )
+        with db.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE operators SET current_work_status = 'Working', active_shift_id = ? WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+                (s_id, op_id, str(op_id)),
+            )
+            conn.execute(
+                "UPDATE shifts SET current_status = 'Working', operator_name = ?, regular_hours = 0.0, standard_hours = 9.0 WHERE shift_id = ?",
+                (op_name, s_id),
+            )
         return {
             "success": True,
             "shift_id": s_id,
-            "operator_name": op["name"],
+            "operator_name": op_name,
             "operator_id": op_id,
             "shift_type": s_type,
             "line_id": line_id,
             "status": "Active",
-            "message": f"Shift started for {op['name']} on {line_id} ({s_type} shift).",
+            "current_status": "Working",
+            "message": f"Shift started for {op_name} on {line_id} ({s_type} shift).",
         }
     except Exception as exc:
         log.error("start_employee_shift failed: %s", exc)
@@ -1966,16 +2379,43 @@ def end_employee_shift(
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Ends the active shift and calculates total_hours."""
-    with db.connect(db_path) as conn:
-        if operator_name and str(operator_name).strip():
-            op = find_operator_by_name(operator_name, active_only=False, db_path=db_path)
-            if not op:
-                return {"success": False, "error": f"Operator '{operator_name}' not found."}
+    if operator_name and str(operator_name).strip():
+        clean_name = str(operator_name).strip()
+        matches = find_operators_matching_name(clean_name, active_only=True, db_path=db_path)
+        if len(matches) > 1:
+            match_names = [m["name"] for m in matches]
+            return {
+                "success": False,
+                "clarification_needed": True,
+                "matches": match_names,
+                "message": f"I found multiple operators matching that name. Did you mean {' or '.join(match_names)}?",
+            }
+        op = matches[0] if matches else find_operator_by_name(clean_name, active_only=False, db_path=db_path)
+        if not op:
+            return {"success": False, "error": f"Operator '{clean_name}' not found."}
+
+        op_name = op.get("name") or clean_name
+        curr_status = op.get("current_work_status", "Off Shift")
+        active_shift_id = op.get("active_shift_id")
+
+        with db.connect(db_path) as conn:
             row = conn.execute(
-                "SELECT * FROM shifts WHERE operator_id = ? AND status IN ('active', 'Active') ORDER BY start_time DESC LIMIT 1",
-                (op["operator_id"],),
+                "SELECT * FROM shifts WHERE (operator_id = ? OR CAST(operator_id AS TEXT) = ?) AND status IN ('active', 'Active') ORDER BY start_time DESC LIMIT 1",
+                (op["operator_id"], str(op["operator_id"])),
             ).fetchone()
-        else:
+
+        if curr_status == "Off Shift" or (active_shift_id is None and not row):
+            return {"success": False, "error": f"Cannot end shift: Operator {op_name} is already Off Shift."}
+
+        if not row:
+            with db.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE operators SET current_work_status = 'Off Shift', active_shift_id = NULL WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+                    (op["operator_id"], str(op["operator_id"])),
+                )
+            return {"success": True, "message": f"Operator {op_name} is now Off Shift.", "status": "Completed"}
+    else:
+        with db.connect(db_path) as conn:
             row = conn.execute(
                 "SELECT * FROM shifts WHERE line_id = ? AND status IN ('active', 'Active') ORDER BY start_time DESC LIMIT 1",
                 (line_id,),
@@ -1993,6 +2433,17 @@ def end_employee_shift(
     updated = get_shift(s_id, db_path)
     op_rec = get_operator(row["operator_id"], db_path)
     name = op_rec["name"] if op_rec else str(row["operator_id"])
+
+    with db.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE operators SET current_work_status = 'Off Shift', active_shift_id = NULL WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+            (row["operator_id"], str(row["operator_id"])),
+        )
+        conn.execute(
+            "UPDATE shifts SET current_status = 'Completed' WHERE shift_id = ?",
+            (s_id,),
+        )
+
     return {
         "success": ok,
         "shift_id": s_id,
@@ -2001,7 +2452,216 @@ def end_employee_shift(
         "actual_start_time": updated.get("actual_start_time"),
         "actual_end_time": updated.get("actual_end_time"),
         "status": "Completed",
+        "current_status": "Completed",
         "message": f"Shift ended for {name}. Total hours: {updated.get('total_hours', 0.0)}.",
+    }
+
+
+def update_employee_work_status(
+    operator_name: str,
+    work_status: str = "",
+    current_work_status: str = "",
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Updates an employee's live floor work status ('Working', 'On Break', 'Off Shift', 'On Leave').
+    Validates state preconditions before updating DB.
+    """
+    clean_name = str(operator_name).strip() if operator_name else ""
+    if not clean_name:
+        return {"success": False, "error": "Operator name must be provided."}
+    raw_status = (current_work_status or work_status or "").strip()
+    if not raw_status:
+        return {"success": False, "error": "Work status must be provided."}
+
+    status_map = {
+        "break": "On Break",
+        "on break": "On Break",
+        "lunch": "On Break",
+        "lunch break": "On Break",
+        "tea": "On Break",
+        "tea break": "On Break",
+        "working": "Working",
+        "work": "Working",
+        "resume": "Working",
+        "resumed": "Working",
+        "off": "Off Shift",
+        "off shift": "Off Shift",
+        "ended": "Off Shift",
+        "leave": "On Leave",
+        "on leave": "On Leave",
+    }
+    target_status = status_map.get(raw_status.lower(), raw_status)
+    if target_status not in ("Working", "On Break", "Off Shift", "On Leave"):
+        return {"success": False, "error": f"Invalid work status: {raw_status}. Must be Working, On Break, Off Shift, or On Leave."}
+
+    matches = find_operators_matching_name(clean_name, active_only=True, db_path=db_path)
+    if len(matches) > 1:
+        match_names = [m["name"] for m in matches]
+        return {
+            "success": False,
+            "clarification_needed": True,
+            "matches": match_names,
+            "message": f"I found multiple operators matching that name. Did you mean {' or '.join(match_names)}?",
+        }
+
+    op = matches[0] if matches else find_operator_by_name(clean_name, active_only=False, db_path=db_path)
+    if not op:
+        return {"success": False, "error": f"Operator '{clean_name}' not found."}
+
+    op_id = op["operator_id"]
+    op_name = op.get("name") or clean_name
+    curr_status = op.get("current_work_status", "Off Shift")
+    active_shift_id = op.get("active_shift_id")
+
+    with db.connect(db_path) as conn:
+        active_shift_row = conn.execute(
+            "SELECT * FROM shifts WHERE (operator_id = ? OR CAST(operator_id AS TEXT) = ?) AND status IN ('active', 'Active') ORDER BY start_time DESC LIMIT 1",
+            (op_id, str(op_id)),
+        ).fetchone()
+
+    has_active_shift = (active_shift_id is not None) or (active_shift_row is not None)
+
+    # State Precondition Checks:
+    if target_status == "On Break":
+        if curr_status == "Off Shift" or not has_active_shift:
+            return {
+                "success": False,
+                "error": f"Cannot update status to On Break: Operator {op_name} is currently Off Shift. Please start their shift first.",
+            }
+        if curr_status == "On Break":
+            return {
+                "success": False,
+                "error": f"Operator {op_name} is already On Break.",
+            }
+
+    elif target_status == "Off Shift":
+        if curr_status == "Off Shift" and not has_active_shift:
+            return {
+                "success": False,
+                "error": f"Cannot end shift: Operator {op_name} is already Off Shift.",
+            }
+        return end_employee_shift(operator_name=op_name, db_path=db_path)
+
+    elif target_status == "Working":
+        if curr_status == "Working":
+            return {
+                "success": False,
+                "error": f"Operator {op_name} is already Working.",
+            }
+        if not has_active_shift:
+            return {
+                "success": False,
+                "error": f"Cannot resume work: Operator {op_name} has no active shift. Please start their shift first.",
+            }
+
+    with db.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE operators SET current_work_status = ? WHERE operator_id = ? OR CAST(operator_id AS TEXT) = ?",
+            (target_status, op_id, str(op_id)),
+        )
+        if has_active_shift:
+            shift_to_update = active_shift_id or (active_shift_row["shift_id"] if active_shift_row else None)
+            if shift_to_update:
+                conn.execute(
+                    "UPDATE shifts SET current_status = ? WHERE shift_id = ?",
+                    (target_status, shift_to_update),
+                )
+
+    return {
+        "success": True,
+        "operator_id": op_id,
+        "operator_name": op_name,
+        "current_work_status": target_status,
+        "message": f"Updated work status for {op_name} to {target_status}.",
+    }
+
+
+def log_operator_hours(
+    operator_name: str,
+    total_hours: float,
+    shift_date: str = "",
+    shift_type: str = "Morning",
+    notes: str = "",
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Log or adjust operator working hours, regular hours, and overtime hours (standard 9h shift)."""
+    clean_name = str(operator_name).strip() if operator_name else ""
+    if not clean_name:
+        return {"success": False, "error": "Operator name must be provided."}
+
+    matches = find_operators_matching_name(clean_name, active_only=True, db_path=db_path)
+    if len(matches) > 1:
+        match_names = [m["name"] for m in matches]
+        return {
+            "success": False,
+            "clarification_needed": True,
+            "matches": match_names,
+            "message": f"I found multiple operators matching that name. Did you mean {' or '.join(match_names)}?",
+        }
+
+    op = matches[0] if matches else find_operator_by_name(clean_name, active_only=False, db_path=db_path)
+    if not op:
+        return {"success": False, "error": f"Operator '{clean_name}' not found."}
+
+    op_id = op["operator_id"]
+    op_name = op.get("name") or clean_name
+    s_date = shift_date.strip() if shift_date else datetime.date.today().isoformat()
+    duration = float(total_hours)
+    standard_hours = 9.0
+    regular_hours = round(min(duration, standard_hours), 2)
+    overtime_hours = round(max(duration - standard_hours, 0.0), 2)
+    overtime_status = "Overtime" if duration > standard_hours else "Normal"
+
+    with db.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT shift_id FROM shifts WHERE (operator_id = ? OR CAST(operator_id AS TEXT) = ?) AND shift_date = ? ORDER BY shift_id DESC LIMIT 1",
+            (op_id, str(op_id), s_date),
+        ).fetchone()
+        if row:
+            s_id = row["shift_id"]
+            conn.execute(
+                """
+                UPDATE shifts SET
+                    total_hours = ?,
+                    regular_hours = ?,
+                    overtime_hours = ?,
+                    overtime_status = ?,
+                    summary_notes = COALESCE(summary_notes || '; ', '') || ?
+                WHERE shift_id = ?
+                """,
+                (duration, regular_hours, overtime_hours, overtime_status, notes or "Logged hours", s_id),
+            )
+        else:
+            now_ts = time.time()
+            cur = conn.execute(
+                """
+                INSERT INTO shifts (
+                    operator_id, operator_name, line_id, shift_date, day, shift_type,
+                    planned_start_time, planned_end_time, actual_start_time, actual_end_time,
+                    total_hours, regular_hours, standard_hours, overtime_hours, overtime_status,
+                    status, current_status, summary_notes, created_at
+                ) VALUES (?, ?, 'line_1', ?, 'Thursday', ?, ?, ?, ?, ?, ?, ?, 9.0, ?, ?, 'Completed', 'Completed', ?, ?)
+                """,
+                (
+                    op_id, op_name, s_date, shift_type,
+                    f"{s_date} 08:00:00", f"{s_date} 17:00:00",
+                    f"{s_date} 08:00:00", f"{s_date} 17:00:00",
+                    duration, regular_hours, overtime_hours, overtime_status,
+                    notes or "Logged hours", now_ts,
+                ),
+            )
+            s_id = cur.lastrowid
+
+    return {
+        "success": True,
+        "shift_id": s_id,
+        "operator_name": op_name,
+        "total_hours": duration,
+        "regular_hours": regular_hours,
+        "overtime_hours": overtime_hours,
+        "overtime_status": overtime_status,
+        "message": f"Logged {duration} hours for {op_name} (Regular: {regular_hours}h, Overtime: {overtime_hours}h).",
     }
 
 

@@ -25,3 +25,8 @@ ui/.env
 *.db.bak*
 *.pt
 weights/
+
+# SQLite temp and backup files
+*.db-wal
+*.db-shm
+*.db.bak*

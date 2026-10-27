@@ -21,6 +21,22 @@ from agent.logging_setup import get_logger
 
 log = get_logger("IDENTITY")
 
+_PHONETIC_NAME_MAP = {
+    "hamdan": "hamdaan",
+    "hamdaan": "hamdaan",
+    "lokmanya": "lukhmaan",
+    "lukman": "lukhmaan",
+    "luqman": "lukhmaan",
+    "lakshman": "lukhmaan",
+    "lukhman": "lukhmaan",
+    "lukhmaan": "lukhmaan",
+    "faris": "farish",
+    "harish": "farish",
+    "farish": "farish",
+    "anand": "anand sharma",
+    "anand sharma": "anand sharma",
+}
+
 # Stopwords and common action words that must never be parsed as names
 _NAME_STOPWORDS = {
     "i", "im", "i'm", "am", "main", "mera", "meri", "here", "speaking", "bol", "raha",
@@ -114,6 +130,14 @@ def extract_name_candidate(text: str) -> Optional[str]:
                 cand = cand.split()[0]
             return cand
 
+    # Pattern 6: "is <Name> working...", "is <Name> on shift..."
+    m = re.search(r"\bis\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(?:working|on\s+shift|present|on\s+duty|here)\b", clean, re.IGNORECASE)
+    if m:
+        cand = m.group(1).strip()
+        first_word = cand.split()[0].lower()
+        if first_word not in _NAME_STOPWORDS and len(cand) >= 3:
+            return cand
+
     return None
 
 
@@ -142,7 +166,7 @@ def resolve_employee(
         with db.connect(db_path) as conn:
             sql = "SELECT * FROM operators"
             if active_only:
-                sql += " WHERE (active = 1 OR status = 'Active')"
+                sql += " WHERE status = 'Active'"
             rows = [dict(r) for r in conn.execute(sql)]
     except Exception as exc:
         log.error("[IDENTITY] Database error fetching operators: %s", exc)
@@ -155,13 +179,14 @@ def resolve_employee(
     # 2. Exact and near-exact match check
     exact_matches = []
     near_matches = []
+    canon_cand = _PHONETIC_NAME_MAP.get(norm_cand, norm_cand)
     for r in rows:
         r_name = normalize_name(r.get("name", ""))
         r_first = r_name.split()[0] if r_name else ""
         r_code = normalize_name(r.get("employee_code", "") or "")
         r_id = normalize_name(r.get("operator_id", "") or "")
 
-        if norm_cand in (r_name, r_first, r_code, r_id):
+        if norm_cand in (r_name, r_first, r_code, r_id) or canon_cand in (r_name, r_first, r_code, r_id):
             exact_matches.append(r)
         else:
             # Check for near-identical alternate transliterations (e.g. Hamdan vs Hamdaan)

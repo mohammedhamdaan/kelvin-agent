@@ -178,10 +178,8 @@ def current_operator(job: Optional[Dict[str, Any]], line_id: str = "line_1") -> 
 
     if job and job.get("operator"):
         return field(job["operator"], REAL)
-    if config.OPERATOR_NAME:
-        return field(config.OPERATOR_NAME, REAL)
     return unavailable(
-        "No operator recorded. Set OPERATOR_NAME in .env or store one on the job."
+        "No operators are currently clocked in on an active shift right now."
     )
 
 

@@ -61,3 +61,10 @@
 **Solution / Corrective Action:** Operator Amar completed printing 5 wall(s): wall numbers [1, 2, 3, 4, 5] on 2026-10-22.
 **Verification Status:** Site-Verified
 
+
+## Issue: Nozzle Clog Field Fix
+**Category:** Maintenance
+**Problem:** Nozzle clog
+**Solution / Corrective Action:** Cleaned and fixed nozzle directly.
+**Verification Status:** Site-Verified
+

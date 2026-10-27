@@ -525,8 +525,21 @@ class TestSpokenAnswerStyle(unittest.TestCase):
     )
 
     def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_db = config.DATABASE_PATH
+        config.DATABASE_PATH = os.path.join(self._tmp.name, "test_style.db")
+        db.init_db(config.DATABASE_PATH)
+        ms.start_print_job("Demo Wall", total_length_mm=1000.0, total_layers=60)
+        ms.update_progress(completed_length_mm=650.0, current_layer=42)
+        db.record_machine_state(printing=True, status="PRINTING", current_layer=42,
+                                layer_width_mm=18.5, layer_width_px=462.5,
+                                confidence=0.94, camera_connected=True)
         config.RAG_INDEX_DIR = "rag_index"
         get_store(refresh=True)
+
+    def tearDown(self):
+        config.DATABASE_PATH = self._old_db
+        self._tmp.cleanup()
 
     def _answer(self, question: str) -> str:
         return qr.summarise(qr.route(question))

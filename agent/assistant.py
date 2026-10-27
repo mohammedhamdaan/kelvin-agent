@@ -83,19 +83,16 @@ SYSTEM_PROMPT = (
     "  * Military Engineer Services (MES): Rapid-deployment defense sanitation infrastructure and public toilet complexes.\n"
     "\n"
     "DATABASE ARCHITECTURE & SCHEMA (`kelvin6k.db`):\n"
-    "The SQLite database contains the following tables:\n"
-    "1. `shifts`: shift_id, operator_id, line_id, shift_date, day, shift_type ('Morning','Day','Evening','Night','Afternoon'), planned_start_time, planned_end_time, actual_start_time, actual_end_time, total_hours, attendance_status, late_minutes, overtime_hours, status, target_walls, summary_notes, created_at.\n"
-    "2. `operators`: operator_id, name, employee_code, role, active (0 or 1), status, created_at.\n"
-    "3. `production_records`: production_id, shift_id, job_id, wall_number, print_file, wall_height, segment_layers, layers_completed, start_time, end_time, status, is_continuation_of, notes, created_at. Tracks walls by wall number, height, layers, and status.\n"
-    "4. `print_jobs`: id, job_name, material, total_length_mm, completed_length_mm, remaining_length_mm, total_layers, current_layer, status, started_at, completed_at, deadline_at, operator, shift, material_total_kg, material_used_kg, wall_height_mm, wall_width_mm, layer_height_mm.\n"
-    "5. `printing_jobs`: job_id, machine_id, operator_id, shift_id, job_name, material, start_time, end_time, printing_duration_hours, standard_printing_hours (9.0), regular_printing_hours, overtime_hours, overtime_status, total_layers, current_layer, completion_percent, status.\n"
-    "6. `shift_issues`: issue_id, shift_id, operator_id, problem_type, problem_description, solution, severity, status, rag_recommendation, rag_verified, rag_source, created_at, resolved_at, wall_number, issue_type, description, cause, action_taken, result, downtime_minutes.\n"
-    "7. `machine_state`: id, job_id, printing (0 or 1), status, current_layer, layer_width_mm, layer_width_px, completed_length_mm, motion_score, confidence, camera_connected, timestamp.\n"
-    "8. `machine_telemetry`: telemetry_id, machine_id, timestamp, speed, temperature, pressure, vibration, status.\n"
-    "9. `layer_measurements`: id, job_id, layer_number, width_px, width_mm, confidence, timestamp.\n"
-    "10. `safety_events`: event_id, camera_id, timestamp, person_id, event_type, confidence, status.\n"
-    "11. `handovers`: handover_id, from_shift_id, to_shift_id, line_id, handover_time, completed_work, pending_work, open_issues, notes, created_at.\n"
-    "12. `event_corrections`: correction_id, entity_type, entity_id, field_name, old_value, new_value, corrected_by, corrected_at, source, reason.\n"
+    "The SQLite database contains the following 8 clean, production tables:\n"
+    "1. `operators`: operator_id (e.g. 'K6K001'), employee_code, name, role, assigned_line, current_work_status ('Working','On Break','Off Shift','On Leave'), active_shift_id, status ('Active','Inactive'), created_at, updated_at.\n"
+    "   Core Seeded Employees: K6K001 (Hamdaan), K6K002 (Farish), K6K003 (Lukhmaan), K6K004 (Anand Sharma). Auto-incrementing K6K### ID generator creates sequential codes for new employees.\n"
+    "2. `machines`: machine_id, machine_name ('Gantry_3D_01'), machine_type ('Gantry 3D Concrete Printer'), status ('Idle'), current_speed_mm_s, nozzle_size_mm, updated_at.\n"
+    "3. `shifts`: shift_id, operator_id, employee_code, operator_name, line_id, shift_date, day, shift_type ('Morning','Day','Evening','Night','Afternoon'), planned_start_time, planned_end_time, actual_start_time, actual_end_time, break_minutes, total_hours, standard_hours (9.0), regular_hours, overtime_hours, overtime_status ('Normal','Overtime'), late_minutes, early_exit_minutes, attendance_status ('Scheduled','Present','Late','Half Day','Absent','On Leave'), current_status ('Scheduled','Working','On Break','Completed','Absent'), status ('Scheduled','Active','Completed','Absent'), target_walls, summary_notes, created_at.\n"
+    "4. `printing_jobs`: job_id, machine_id, operator_id, shift_id, job_name, material, wall_length_mm, wall_width_mm, wall_height_mm, layer_height_mm, total_layers, current_layer, completed_length_mm, completion_percent, start_time, end_time, printing_duration_hours, standard_printing_hours (9.0), regular_printing_hours, overtime_hours, overtime_status, status ('Queued','Running','Paused','Completed','Aborted').\n"
+    "5. `production_records`: production_id, shift_id, job_id, operator_id, wall_number (1 to 500, no placeholders), wall_length_mm, wall_width_mm, wall_height_mm, layer_height_mm, total_layers, layers_completed, print_file, status ('in_progress','completed','aborted','defect'), start_time, end_time, notes, created_at.\n"
+    "6. `shift_issues`: issue_id, shift_id, operator_id, wall_number, problem_type, problem_description, cause, solution, severity ('Low','Medium','High','Critical'), downtime_minutes, status ('Open','Resolved'), rag_source, created_at, resolved_at.\n"
+    "7. `handovers`: handover_id, from_shift_id, to_shift_id, line_id, handover_time, completed_work, pending_work, open_issues, notes, created_at.\n"
+    "8. `event_corrections`: correction_id, entity_type, entity_id, field_name, old_value, new_value, corrected_by, corrected_at, source, reason.\n"
     "\n"
     "CORE LOGIC & EPISTEMIC REASONING PROTOCOL:\n"
     "1. Fact-First Epistemic Rigor (No Invented Backstories):\n"
@@ -124,7 +121,11 @@ SYSTEM_PROMPT = (
     "- 'to walls' / 'too walls' -> '2 walls'.\n"
     "- 'for walls' -> '4 walls'.\n"
     "- 'one wall' / 'won wall' -> '1 wall'.\n"
-    "- 'hamdan' / 'hamdaan' -> Operator 'Hamdan'.\n"
+    "- 'hamdan' / 'hamdaan' -> Operator 'Hamdaan' (K6K001).\n"
+    "- 'farish' -> Operator 'Farish' (K6K002).\n"
+    "- 'lukman' / 'luqman' / 'lukhman' / 'lukhmaan' / 'lokmanya' / 'lakshman' -> Operator 'Lukhmaan' (K6K003).\n"
+    "- 'farish' / 'faris' / 'harish' -> Operator 'Farish' (K6K002).\n"
+    "- 'anand' / 'anand sharma' / 'anand vihar' -> Operator 'Anand Sharma' (K6K004).\n"
     "- Always interpret these phonetic slips naturally and address the operator's actual question directly.\n"
     "\n"
     "YOUR ROLE & OBJECTIVES:\n"
@@ -138,6 +139,19 @@ SYSTEM_PROMPT = (
     "5. If a request is open-ended or missing details (e.g., 'I am facing a problem', 'Start my shift' without an employee name), naturally converse in friendly, conversational English (e.g., 'I am here to help. What problem are you facing?').\n"
     "6. Standard printing time rule: Standard printing hours is 9.0 hours. Any printing duration beyond 9.0 hours is overtime (overtime_hours = max(duration - 9.0, 0.0)). The printing tools handle this math automatically.\n"
     "7. When an operator describes a fix or new procedure they want you to remember (e.g. 'Remember this fix', 'Learn this', 'Save this SOP'), call learn_and_store_in_rag_brain to persistently store it in the RAG brain.\n"
+    "8. EMPLOYEE STATUS, BREAKS & SHIFT PRECONDITION VALIDATION:\n"
+    "   - Always use `update_employee_work_status` to assign or change an employee's live work status ('Working', 'On Break', 'Off Shift', 'On Leave'), including lunch breaks, tea breaks, or resuming work. NEVER perform blind SQL writes via `execute_sql_write` to change operator status.\n"
+    "   - Always use `start_employee_shift` to start an employee's shift and `end_employee_shift` to end their shift.\n"
+    "   - CRITICAL PRECONDITION VALIDATION: Employees cannot be put on break if they are not currently working on an active shift! If an employee is currently Off Shift or has no active shift (`active_shift_id IS NULL`), `update_employee_work_status` will return a structured failure response (`{\"success\": False, \"error\": \"Cannot update status to On Break: Operator Hamdaan is currently Off Shift. Please start their shift first.\"}`).\n"
+    "   - When a tool returns this failure response, you MUST read the error and naturally tell the user in clear spoken English: \"I cannot put Hamdaan on a lunch break because his shift has already ended / he is off-shift.\" (or \"I cannot put Hamdaan on a lunch break because he is currently off-shift. Please start his shift first.\"). Never ignore tool failure responses or claim the break succeeded!\n"
+    "   - PREVENT DOUBLE ACTIONS & IDEMPOTENT CLOCK-IN: Do not start a shift if the operator is already Working; if an operator is already clocked into an active shift, `start_employee_shift` returns `{\"success\": False, \"error\": \"Operator <name> is already clocked into an active shift.\"}`. Inform the user naturally (e.g., 'Operator Hamdaan is already clocked into an active shift.'). Do not end a shift if the operator is already Off Shift.\n"
+    "   - AMBIGUOUS NAME COLLISION RESOLUTION (STT SAFETY): When matching operator names from voice inputs (e.g. 'Aman', 'Anand Sharma'), if a name matches more than one active operator, tools will return `{\"success\": False, \"clarification_needed\": True, \"matches\": [...], \"message\": \"I found multiple operators matching that name. Did you mean Aman or Anand Sharma?\"}`. Abort the mutation and ask the user for clarification using this exact prompt.\n"
+    "   - GHOST SHIFT AUTO-CLOSURE (16-HOUR RULE): Open shifts older than 16 hours are automatically closed with 9.0 regular hours and marked 'Auto-closed due to forgotten clock-out'.\n"
+    "   - LIVE OPERATOR ATTENDANCE & SHIFT STATUS QUERIES:\n"
+    "     * When asked 'who is working right now', 'who is on shift', 'is anyone working', or if a specific person is working (e.g. 'is Lokmanya working right now', 'is Hamdaan on shift'), ALWAYS query the live database using `get_operators_status` or `get_active_shifts`.\n"
+    "     * If nobody is currently clocked into an active shift, state naturally: 'No operators are currently clocked in on an active shift right now.'\n"
+    "     * If the queried operator is working, state naturally: 'Yes, <Operator> is currently clocked in and working on shift.' If they are off shift or on break, tell the user their live status (e.g. '<Operator> is currently Off Shift / On Break.').\n"
+    "     * NEVER say that the operator is not recorded or tell the user to set OPERATOR_NAME in the .env file. Always report live database state.\n"
     "\n"
     "HARDWARE MONITORING PRINCIPLE:\n"
     "You are a monitoring, logging, and advisory system only. Never claim to physically drive motors, actuate pumps, or alter hardware settings on the physical machine. If telemetry or sensor metrics are unavailable, state clearly that they are not connected or currently unavailable.\n"
@@ -213,7 +227,22 @@ def record_operator_wall_production(
     """Record completed wall production for an operator. Use when an operator reports completing wall(s) (e.g. 'Hamdan completed printing 2 walls', 'I printed to walls', 'Recorded 2 walls for Hamdan'). Handles numbers and STT homophones like 'to walls' = 2 walls."""
     from agent import identity
     name_to_use = (operator_name or "").strip() or "Operator"
-    op = shift_store.find_operator_by_name(name_to_use)
+    if operator_name and operator_name.strip():
+        matches = shift_store.find_operators_matching_name(operator_name.strip(), active_only=True)
+        if len(matches) > 1:
+            match_names = [m["name"] for m in matches]
+            return {
+                "success": False,
+                "clarification_needed": True,
+                "matches": match_names,
+                "message": f"I found multiple operators matching that name. Did you mean {' or '.join(match_names)}?",
+            }
+        op = matches[0] if matches else None
+    else:
+        op = None
+
+    if not op:
+        op = shift_store.find_operator_by_name(name_to_use)
     if not op:
         res = identity.resolve_employee(name_to_use, active_only=False)
         if res.status == "MATCHED" and res.operator:
@@ -333,11 +362,37 @@ def log_or_update_shift_issue(
     )
 
 
+def update_employee_work_status(
+    operator_name: str,
+    current_work_status: str = "",
+    work_status: str = "",
+) -> dict:
+    """Update an employee's live floor work status ('Working', 'On Break', 'Off Shift', 'On Leave'). Use when an operator goes on break (lunch break, tea break), resumes working, ends shift, or takes leave."""
+    status_to_use = current_work_status or work_status
+    return shift_store.update_employee_work_status(operator_name, status_to_use)
+
+
+def log_operator_hours(
+    operator_name: str,
+    total_hours: float,
+    shift_date: str = "",
+    shift_type: str = "Morning",
+    notes: str = "",
+) -> dict:
+    """Log or adjust operator working hours, regular hours, and overtime hours (standard 9h shift)."""
+    return shift_store.log_operator_hours(
+        operator_name, total_hours, shift_date or None, shift_type, notes
+    )
+
+
 def execute_sql_query(query: str) -> List[Dict[str, Any]]:
     """Execute a read-only SQL SELECT query on the kelvin6k SQLite database. Returns list of rows as dictionaries."""
     import sqlite3
     db_path = config.DATABASE_PATH
     conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     conn.row_factory = sqlite3.Row
     try:
         cur = conn.cursor()
@@ -355,6 +410,9 @@ def execute_sql_write(query: str) -> Dict[str, Any]:
     import sqlite3
     db_path = config.DATABASE_PATH
     conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     try:
         cur = conn.cursor()
         cur.execute(query)
@@ -451,6 +509,16 @@ def get_active_shift() -> dict:
     }
 
 
+def get_active_shifts() -> dict:
+    """Get all active shifts and operators currently clocked in and working on the shop floor."""
+    return shift_store.get_operators_status()
+
+
+def get_operators_status(operator_name: str = "") -> dict:
+    """Check the live floor work status of a specific operator or all operators (whether Working, On Break, Off Shift)."""
+    return shift_store.get_operators_status(operator_name or None)
+
+
 TOOLS: List[Callable] = [
     execute_sql_query,
     execute_sql_write,
@@ -460,6 +528,7 @@ TOOLS: List[Callable] = [
     create_or_update_employee,
     start_employee_shift,
     end_employee_shift,
+    update_employee_work_status,
     query_shifts_and_attendance,
     record_operator_wall_production,
     query_operator_wall_production,
@@ -467,6 +536,8 @@ TOOLS: List[Callable] = [
     query_printing_jobs_and_overtime,
     log_or_update_shift_issue,
     get_active_shift,
+    get_active_shifts,
+    get_operators_status,
     get_current_print_status,
     get_current_layer,
     get_current_layer_width,
@@ -478,6 +549,10 @@ TOOLS: List[Callable] = [
 _TOOLS_BY_NAME = {fn.__name__: fn for fn in TOOLS}
 _TOOLS_BY_NAME["store_learned_knowledge"] = store_learned_knowledge
 _TOOLS_BY_NAME["search_rag_brain_knowledge"] = search_rag_brain_knowledge
+_TOOLS_BY_NAME["update_employee_work_status"] = update_employee_work_status
+_TOOLS_BY_NAME["log_operator_hours"] = log_operator_hours
+_TOOLS_BY_NAME["get_active_shifts"] = get_active_shifts
+_TOOLS_BY_NAME["get_operators_status"] = get_operators_status
 
 
 @dataclass
@@ -1346,6 +1421,12 @@ class Assistant:
             if existing:
                 return "Line 1 already has an active shift. Please close the current shift first."
 
+            if operator_id and not action.params.get("create_operator"):
+                op_rec = shift_store.get_operator(operator_id)
+                if op_rec and op_rec.get("current_work_status") == "Working":
+                    name = op_rec.get("name") or operator_id
+                    return f"Operator {name} is already clocked into an active shift."
+
             if action.params.get("create_operator"):
                 op_name = action.params.get("operator_name", "Operator")
                 clean_code = re.sub(r"[^A-Za-z0-9]", "", op_name).upper()
@@ -1407,6 +1488,10 @@ class Assistant:
             active = shift_store.get_active_shift_for_line(line_id)
             if not active:
                 return f"No active shift found to end on {line_id}."
+            op_rec = shift_store.get_operator(active["operator_id"]) if active else None
+            if op_rec and op_rec.get("current_work_status") == "Off Shift":
+                name = op_rec.get("name") or active["operator_id"]
+                return f"Cannot end shift: Operator {name} is already Off Shift."
             try:
                 ended_at = self._server_now()
                 shift_store.end_shift(active["shift_id"], status="closed", end_time=ended_at)
@@ -1605,7 +1690,13 @@ class Assistant:
         if not question:
             return "I didn't catch a question."
 
-        # 0. Check for pending action confirmations or awaiting interactive states
+        # 0. Ghost Shift Auto-Closure sweep (16-Hour Rollover Rule)
+        try:
+            shift_store.auto_close_ghost_shifts()
+        except Exception as exc:
+            log.warning("Ghost shift auto-closure sweep failed: %s", exc)
+
+        # Check for pending action confirmations or awaiting interactive states
         pending = self._actions.get(session_id, line_id)
         sess = self._session_ctx.get(session_id, line_id)
         has_awaiting_state = bool(
@@ -1666,6 +1757,26 @@ class Assistant:
         )
         clean_norm = query_router.strip_wake_words(question).strip()
         clean_lower = clean_norm.lower().rstrip(".!?")
+
+        # Break & work status change check
+        if any(b in clean_lower for b in ("lunch break", "tea break", "on break", "on a break", "break pe", "break par", "put on break", "put him on break", "put her on break", "take a break", "taking a break")):
+            cand_name = None
+            for w in re.findall(r"\b[A-Za-z0-9_]+\b", clean_norm):
+                if w.lower() not in {"put", "on", "a", "an", "the", "lunch", "tea", "break", "is", "going", "to", "for", "pe", "par", "ja", "raha", "hai", "karo", "please", "can", "you", "kelvin", "shift", "him", "her", "take", "taking"}:
+                    op_check = shift_store.find_operator_by_name(w)
+                    if op_check:
+                        cand_name = op_check["name"]
+                        break
+            if not cand_name:
+                cand_name = identity.extract_name_candidate(clean_norm) or sess.current_operator_name
+            if cand_name:
+                res = update_employee_work_status(operator_name=cand_name, current_work_status="On Break")
+                if not res.get("success"):
+                    err = res.get("error", "")
+                    if "Off Shift" in err or "off-shift" in err.lower():
+                        return f"I cannot put {cand_name} on a lunch break because his shift has already ended / he is off-shift. Please start their shift first."
+                    return err
+                return f"I have updated {cand_name}'s status to On Break."
         if any(clean_lower == p or clean_lower.startswith(p + " ") for p in problem_starters):
             active = shift_store.get_active_shift_for_line(line_id)
             op = shift_store.get_operator(active["operator_id"]) if active else None
@@ -1680,12 +1791,20 @@ class Assistant:
             prefix = f"{name}, " if name else "I'm here to help. "
             return f"{prefix}what problem are you facing?"
 
+        # Operator / attendance status check in offline router
+        if routed and getattr(routed, "intent", None) == query_router.Intent.GET_OPERATOR:
+            return query_router.summarise(routed)
+
         # Pure self-introduction check: "I am Hamdaan", "Hamdaan here", "Main Hamdaan"
-        intro_cand = identity.extract_name_candidate(clean_norm)
-        # Check if question is purely introducing oneself without an action verb
         lower_q = clean_norm.lower()
-        action_verbs = {"start", "end", "complete", "completed", "print", "printed", "wall", "issue", "problem", "record", "logged", "log", "chalu", "khatam", "band", "roko"}
+        action_verbs = {
+            "start", "end", "complete", "completed", "print", "printed", "wall",
+            "issue", "problem", "record", "logged", "log", "chalu", "khatam",
+            "band", "roko", "working", "work", "shift", "break", "leave", "status",
+        }
         q_words = set(re.findall(r"\b\w+\b", lower_q))
+        is_query_phrase = any(w in q_words for w in ("is", "are", "who", "whom", "kya", "kaun", "kon", "where", "kahan"))
+        intro_cand = None if is_query_phrase else identity.extract_name_candidate(clean_norm)
         if intro_cand and not (q_words & action_verbs):
             res = identity.resolve_employee(intro_cand, active_only=True)
             if res.status == "MATCHED" and res.operator:

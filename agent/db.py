@@ -91,7 +91,10 @@ CREATE TABLE IF NOT EXISTS operators (
     status        TEXT NOT NULL DEFAULT 'Active',
     employee_code TEXT UNIQUE,
     active        INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    current_work_status TEXT NOT NULL DEFAULT 'Off Shift',
+    active_shift_id     INTEGER,
+    assigned_line       TEXT NOT NULL DEFAULT 'line_1'
 );
 
 -- 2. Shifts (Attendance & Shift Lifecycle)
@@ -110,12 +113,18 @@ CREATE TABLE IF NOT EXISTS shifts (
     attendance_status  TEXT NOT NULL DEFAULT 'Scheduled',
     late_minutes       INTEGER DEFAULT 0,
     overtime_hours     REAL DEFAULT 0.0,
+    overtime_status    TEXT DEFAULT 'Normal',
     status             TEXT NOT NULL DEFAULT 'Scheduled' CHECK(status IN ('Scheduled', 'Active', 'Completed', 'Absent', 'active', 'closed', 'flagged', 'abandoned')),
     start_time         REAL,
     end_time           REAL,
     target_walls       INTEGER NOT NULL DEFAULT 0,
     summary_notes      TEXT,
-    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    regular_hours      REAL DEFAULT 0.0,
+    standard_hours     REAL DEFAULT 9.0,
+    current_status     TEXT DEFAULT 'Working',
+    operator_name      TEXT,
+    employee_code      TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_single_active_line ON shifts(line_id) WHERE status IN ('active', 'Active');
 CREATE INDEX IF NOT EXISTS idx_shifts_date ON shifts(shift_date, shift_type);
@@ -287,6 +296,9 @@ _MIGRATIONS = [
     ("print_jobs", "wall_width_mm", "REAL"),
     ("print_jobs", "layer_height_mm", "REAL"),
     ("operators", "status", "TEXT NOT NULL DEFAULT 'Active'"),
+    ("operators", "current_work_status", "TEXT NOT NULL DEFAULT 'Off Shift'"),
+    ("operators", "active_shift_id", "INTEGER"),
+    ("operators", "assigned_line", "TEXT DEFAULT 'line_1'"),
     ("shifts", "day", "TEXT DEFAULT 'Thursday'"),
     ("shifts", "planned_start_time", "DATETIME DEFAULT '2026-10-08 08:00:00'"),
     ("shifts", "planned_end_time", "DATETIME DEFAULT '2026-10-08 17:00:00'"),
@@ -296,6 +308,12 @@ _MIGRATIONS = [
     ("shifts", "attendance_status", "TEXT NOT NULL DEFAULT 'Scheduled'"),
     ("shifts", "late_minutes", "INTEGER DEFAULT 0"),
     ("shifts", "overtime_hours", "REAL DEFAULT 0.0"),
+    ("shifts", "overtime_status", "TEXT DEFAULT 'Normal'"),
+    ("shifts", "regular_hours", "REAL DEFAULT 0.0"),
+    ("shifts", "standard_hours", "REAL DEFAULT 9.0"),
+    ("shifts", "current_status", "TEXT DEFAULT 'Working'"),
+    ("shifts", "operator_name", "TEXT"),
+    ("shifts", "employee_code", "TEXT"),
     ("shift_issues", "problem_type", "TEXT DEFAULT 'operational_issue'"),
     ("shift_issues", "problem_description", "TEXT DEFAULT ''"),
     ("shift_issues", "solution", "TEXT"),
@@ -333,12 +351,18 @@ def _migrate_shifts_table_if_needed(conn) -> None:
                 attendance_status  TEXT NOT NULL DEFAULT 'Scheduled',
                 late_minutes       INTEGER DEFAULT 0,
                 overtime_hours     REAL DEFAULT 0.0,
+                overtime_status    TEXT DEFAULT 'Normal',
                 status             TEXT NOT NULL DEFAULT 'Scheduled' CHECK(status IN ('Scheduled', 'Active', 'Completed', 'Absent', 'active', 'closed', 'flagged', 'abandoned')),
                 start_time         REAL,
                 end_time           REAL,
                 target_walls       INTEGER NOT NULL DEFAULT 0,
                 summary_notes      TEXT,
-                created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+                regular_hours      REAL DEFAULT 0.0,
+                standard_hours     REAL DEFAULT 9.0,
+                current_status     TEXT DEFAULT 'Working',
+                operator_name      TEXT,
+                employee_code      TEXT
             );
             """)
             src_cols = [c["name"] for c in conn.execute("PRAGMA table_info(shifts)").fetchall()]

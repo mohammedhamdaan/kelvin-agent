@@ -30,3 +30,18 @@ weights/
 *.db-wal
 *.db-shm
 *.db.bak*
+
+# OS & Python Cache
+.DS_Store
+__pycache__/
+.pytest_cache/
+
+# Environment Secrets & DB Backups
+.env
+*.db.bak*
+*.db-wal
+*.db-shm
+
+# Frontend Build & Dependencies
+ui/node_modules/
+ui/dist/
